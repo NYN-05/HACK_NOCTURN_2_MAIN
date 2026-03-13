@@ -13,11 +13,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", default="artifacts/verisight_layer1.onnx")
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--dynamic-batch", action="store_true", help="Export with dynamic batch axis")
+    parser.add_argument("--num-cpu-threads", type=int, default=0, help="0 keeps PyTorch default")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.num_cpu_threads > 0:
+        torch.set_num_threads(args.num_cpu_threads)
+        torch.set_num_interop_threads(max(1, args.num_cpu_threads // 2))
+
     model = EfficientNetForensics(pretrained=False)
 
     checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
@@ -25,16 +32,18 @@ def main() -> None:
     model.eval()
 
     dummy = torch.randn(1, 6, args.image_size, args.image_size)
+    dynamic_axes = {"input": {0: "batch"}, "logits": {0: "batch"}} if args.dynamic_batch else None
 
-    torch.onnx.export(
-        model,
-        dummy,
-        args.output,
-        input_names=["input"],
-        output_names=["logits"],
-        dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
-        opset_version=17,
-    )
+    with torch.inference_mode():
+        torch.onnx.export(
+            model,
+            dummy,
+            args.output,
+            input_names=["input"],
+            output_names=["logits"],
+            dynamic_axes=dynamic_axes,
+            opset_version=17,
+        )
     print(f"ONNX model exported to: {args.output}")
 
 

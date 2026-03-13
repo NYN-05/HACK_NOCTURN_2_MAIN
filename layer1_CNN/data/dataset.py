@@ -208,6 +208,8 @@ def build_dataloaders(
     num_workers: int = 4,
     seed: int = 42,
     pin_memory: bool = False,
+    prefetch_factor: int = 2,
+    multiprocessing_context: str = "spawn",
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     samples = discover_samples(dataset_root)
     train_samples, val_samples, test_samples = stratified_split(samples, seed=seed)
@@ -216,28 +218,31 @@ def build_dataloaders(
     val_dataset = ForensicsDataset(val_samples, image_size=image_size, training=False)
     test_dataset = ForensicsDataset(test_samples, image_size=image_size, training=False)
 
+    loader_kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "persistent_workers": num_workers > 0,
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["multiprocessing_context"] = multiprocessing_context
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        **loader_kwargs,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=num_workers > 0,
+        **loader_kwargs,
     )
     return train_loader, val_loader, test_loader

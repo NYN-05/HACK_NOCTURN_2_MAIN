@@ -28,6 +28,7 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None = None,
     scaler: torch.amp.GradScaler | None = None,
     amp_enabled: bool = False,
+    channels_last: bool = False,
 ) -> Tuple[float, Dict[str, object]]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -35,11 +36,13 @@ def run_epoch(
     running_loss = 0.0
     y_true, y_pred = [], []
 
-    context = torch.enable_grad if is_train else torch.no_grad
+    context = torch.enable_grad if is_train else torch.inference_mode
     with context():
         for batch in tqdm(loader, leave=False):
             images = batch["image"].to(device, non_blocking=True)
             labels = batch["label"].to(device, non_blocking=True)
+            if channels_last:
+                images = images.contiguous(memory_format=torch.channels_last)
 
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                 logits = model(images)
@@ -78,6 +81,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--prefetch-factor", type=int, default=2)
+    parser.add_argument("--multiprocessing-context", default="spawn", choices=["spawn", "forkserver"])
+    parser.add_argument("--num-cpu-threads", type=int, default=0, help="0 keeps PyTorch default")
+    parser.add_argument("--data-parallel", action="store_true", help="Use all CUDA GPUs via DataParallel")
+    parser.add_argument("--compile", action="store_true", help="Enable torch.compile for single-GPU CUDA runs")
+    parser.add_argument("--channels-last", action="store_true", help="Use channels_last memory format on CUDA")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=7, help="Early stopping patience")
@@ -98,10 +107,21 @@ def main() -> None:
     device = resolve_device(args.device)
     cuda_enabled = use_cuda(device)
     amp_enabled = bool(args.amp and cuda_enabled)
+    channels_last_enabled = bool(args.channels_last and cuda_enabled)
+
+    if args.compile and args.data_parallel:
+        print("Both --compile and --data-parallel were set. Prioritizing --data-parallel and disabling --compile.")
+        args.compile = False
+
+    if args.num_cpu_threads > 0:
+        torch.set_num_threads(args.num_cpu_threads)
+        torch.set_num_interop_threads(max(1, args.num_cpu_threads // 2))
 
     if cuda_enabled:
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
 
@@ -112,9 +132,34 @@ def main() -> None:
         num_workers=args.num_workers,
         seed=args.seed,
         pin_memory=cuda_enabled,
+        prefetch_factor=args.prefetch_factor,
+        multiprocessing_context=args.multiprocessing_context,
     )
 
     model = EfficientNetForensics(pretrained=True).to(device)
+    if channels_last_enabled:
+        model = model.to(memory_format=torch.channels_last)
+
+    if args.compile and cuda_enabled and not args.data_parallel and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="max-autotune")
+            # Trigger backend creation once so Triton issues are caught early.
+            with torch.inference_mode():
+                warmup = torch.randn(1, 6, args.image_size, args.image_size, device=device)
+                if channels_last_enabled:
+                    warmup = warmup.contiguous(memory_format=torch.channels_last)
+                _ = model(warmup)
+            print("Using torch.compile(max-autotune)")
+        except Exception as exc:
+            print(f"torch.compile unavailable at runtime ({exc}). Continuing without compile.")
+            args.compile = False
+            model = EfficientNetForensics(pretrained=True).to(device)
+            if channels_last_enabled:
+                model = model.to(memory_format=torch.channels_last)
+
+    if cuda_enabled and args.data_parallel and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+        print(f"Using DataParallel across {torch.cuda.device_count()} GPUs")
     criterion = nn.CrossEntropyLoss()
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=2)
@@ -132,6 +177,7 @@ def main() -> None:
             optimizer,
             scaler=scaler,
             amp_enabled=amp_enabled,
+            channels_last=channels_last_enabled,
         )
         val_loss, val_metrics = run_epoch(
             model,
@@ -141,6 +187,7 @@ def main() -> None:
             optimizer=None,
             scaler=None,
             amp_enabled=amp_enabled,
+            channels_last=channels_last_enabled,
         )
 
         scheduler.step(val_metrics["f1"])
@@ -167,7 +214,7 @@ def main() -> None:
             save_checkpoint(
                 {
                     "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "best_val_f1": best_f1,
                     "args": vars(args),
@@ -182,7 +229,10 @@ def main() -> None:
             break
 
     checkpoint = torch.load(output_dir / "best_model.pth", map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     test_loss, test_metrics = run_epoch(
         model,
@@ -192,6 +242,7 @@ def main() -> None:
         optimizer=None,
         scaler=None,
         amp_enabled=amp_enabled,
+        channels_last=channels_last_enabled,
     )
     print(f"Test loss: {test_loss:.4f} | Test metrics: {test_metrics}")
 
