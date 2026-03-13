@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 
 import numpy as np
 import torch
@@ -33,6 +34,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if platform.system().lower() == "windows" and args.compile:
+        print("Disabling --compile on Windows for runtime stability.")
+        args.compile = False
+
     device = resolve_device(args.device)
     cuda_enabled = use_cuda(device)
     channels_last_enabled = bool(args.channels_last and cuda_enabled)

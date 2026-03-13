@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 from pathlib import Path
 from typing import Dict
 
@@ -118,7 +119,7 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         device=args.device,
         image_size=args.image_size,
-        compile_model=args.compile,
+        compile_model=(False if platform.system().lower() == "windows" else args.compile),
         channels_last=args.channels_last,
     )
     result = engine.predict(args.image)

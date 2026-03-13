@@ -32,19 +32,20 @@ set CHECKPOINT=artifacts\best_model.pth
 set OUTPUT_ONNX=artifacts\verisight_layer1.onnx
 set OUTPUT_IMAGE=artifacts\gradcam_overlay.png
 set DEVICE=cuda
+set TORCHDYNAMO_DISABLE=1
+set TORCH_COMPILE_DISABLE=1
 
 for /f %%i in ('%PYTHON% -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul') do set HAS_CUDA=%%i
 if not "%HAS_CUDA%"=="1" goto no_cuda
 
-set TRAIN_ACCEL_FLAGS=--compile
+set TRAIN_ACCEL_FLAGS=
 for /f %%i in ('%PYTHON% -c "import torch; print(torch.cuda.device_count())" 2^>nul') do set GPU_COUNT=%%i
 if not "%GPU_COUNT%"=="" (
 	if %GPU_COUNT% GTR 1 set TRAIN_ACCEL_FLAGS=--data-parallel
 )
 
 set COMPILE_FLAGS=
-for /f %%i in ('%PYTHON% -c "import importlib.util; print('1' if importlib.util.find_spec('triton') else '0')" 2^>nul') do set HAS_TRITON=%%i
-if "%HAS_TRITON%"=="1" set COMPILE_FLAGS=--compile
+set HAS_TRITON=0
 if "%TRAIN_ACCEL_FLAGS%"=="--data-parallel" set COMPILE_FLAGS=
 
 echo Auto-tuning runtime parameters from CPU/GPU resources...
@@ -53,6 +54,11 @@ for /f "tokens=1,2,3,4" %%a in ('%PYTHON% -c "import os,torch; cpu=os.cpu_count(
 	set PREFETCH_FACTOR=%%b
 	set EVAL_BATCH_SIZE=%%c
 	set NUM_CPU_THREADS=%%d
+)
+
+if "%OS%"=="Windows_NT" (
+	set NUM_WORKERS=0
+	set PREFETCH_FACTOR=2
 )
 
 echo Tuned NUM_WORKERS=!NUM_WORKERS! PREFETCH_FACTOR=!PREFETCH_FACTOR! EVAL_BATCH_SIZE=!EVAL_BATCH_SIZE! NUM_CPU_THREADS=!NUM_CPU_THREADS!
@@ -81,7 +87,13 @@ if errorlevel 1 (
 
 echo [2/5] Training model...
 %PYTHON% -m training.train --dataset-root "%DATASET_ROOT%" --output-dir "%OUTPUT_DIR%" --epochs %EPOCHS% --batch-size %BATCH_SIZE% --image-size %IMAGE_SIZE% --device %DEVICE% --amp !TRAIN_ACCEL_FLAGS! !COMPILE_FLAGS! --channels-last --num-workers %NUM_WORKERS% --prefetch-factor %PREFETCH_FACTOR% --num-cpu-threads %NUM_CPU_THREADS%
-if errorlevel 1 goto failed
+if errorlevel 1 (
+	echo Initial training launch failed. Retrying with num_workers=0 for Windows multiprocessing stability...
+	set NUM_WORKERS=0
+	set PREFETCH_FACTOR=2
+	%PYTHON% -m training.train --dataset-root "%DATASET_ROOT%" --output-dir "%OUTPUT_DIR%" --epochs %EPOCHS% --batch-size %BATCH_SIZE% --image-size %IMAGE_SIZE% --device %DEVICE% --amp !TRAIN_ACCEL_FLAGS! !COMPILE_FLAGS! --channels-last --num-workers %NUM_WORKERS% --prefetch-factor %PREFETCH_FACTOR% --num-cpu-threads %NUM_CPU_THREADS%
+	if errorlevel 1 goto failed
+)
 
 echo [3/5] Evaluating model...
 %PYTHON% -m evaluation.evaluate --dataset-root "%DATASET_ROOT%" --checkpoint "%CHECKPOINT%" --device %DEVICE% --batch-size %EVAL_BATCH_SIZE% --num-workers %NUM_WORKERS% --prefetch-factor %PREFETCH_FACTOR% --num-cpu-threads %NUM_CPU_THREADS% !COMPILE_FLAGS! --channels-last

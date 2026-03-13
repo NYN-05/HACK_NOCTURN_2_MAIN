@@ -2,6 +2,7 @@ import argparse
 import logging
 import random
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -56,6 +57,62 @@ def _collect_images(path: Path) -> List[Path]:
     return files
 
 
+def _extract_zip_archives(dataset_root: Path) -> Path:
+    extracted_root = dataset_root / "_extracted"
+    extracted_root.mkdir(parents=True, exist_ok=True)
+
+    zip_files = sorted(dataset_root.glob("*.zip"))
+    for zip_file in zip_files:
+        target_dir = extracted_root / zip_file.stem
+        marker = target_dir / ".done"
+        if marker.exists():
+            continue
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        LOGGER.info("Extracting %s -> %s", zip_file, target_dir)
+        with zipfile.ZipFile(zip_file, "r") as zip_ref:
+            zip_ref.extractall(target_dir)
+        marker.write_text("ok", encoding="utf-8")
+
+    return extracted_root
+
+
+def _find_cifake_root(search_roots: Sequence[Path]) -> Path | None:
+    def is_cifake_layout(root: Path) -> bool:
+        return (
+            (root / "train" / "REAL").exists()
+            and (root / "train" / "FAKE").exists()
+            and (root / "test" / "REAL").exists()
+            and (root / "test" / "FAKE").exists()
+        )
+
+    for root in search_roots:
+        if not root.exists():
+            continue
+        if is_cifake_layout(root):
+            return root
+        for train_real in root.rglob("train/REAL"):
+            candidate = train_real.parent.parent
+            if is_cifake_layout(candidate):
+                return candidate
+    return None
+
+
+def _find_imagenet_root(search_roots: Sequence[Path]) -> Path | None:
+    for root in search_roots:
+        if not root.exists():
+            continue
+
+        if _collect_images(root):
+            return root
+
+        for candidate in root.rglob("imagenet-mini"):
+            if _collect_images(candidate):
+                return candidate
+
+    return None
+
+
 def _safe_copy(source_file: Path, destination_file: Path) -> bool:
     destination_file.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -107,16 +164,32 @@ def prepare_dataset(
     """
     LOGGER.info("Preparing dataset from CIFAKE + ImageNet Mini")
 
-    cifake_real = _collect_images(cifake_dir / "train" / "REAL") + _collect_images(cifake_dir / "test" / "REAL")
-    cifake_fake = _collect_images(cifake_dir / "train" / "FAKE") + _collect_images(cifake_dir / "test" / "FAKE")
-    imagenet_real = _collect_images(imagenet_mini_dir)
+    extracted_root = _extract_zip_archives(output_root)
+
+    cifake_root = _find_cifake_root([cifake_dir, output_root, extracted_root])
+    imagenet_root = _find_imagenet_root([imagenet_mini_dir, output_root / "imagenet-mini", extracted_root])
+
+    if cifake_root is None:
+        raise FileNotFoundError(
+            "CIFAKE source not found. Expected train/test with REAL/FAKE folders under dataset paths or extracted zips."
+        )
+
+    LOGGER.info("Using CIFAKE source: %s", cifake_root)
+    if imagenet_root is not None:
+        LOGGER.info("Using ImageNet Mini source: %s", imagenet_root)
+    else:
+        LOGGER.warning("ImageNet Mini source not found. Proceeding with CIFAKE real images only.")
+
+    cifake_real = _collect_images(cifake_root / "train" / "REAL") + _collect_images(cifake_root / "test" / "REAL")
+    cifake_fake = _collect_images(cifake_root / "train" / "FAKE") + _collect_images(cifake_root / "test" / "FAKE")
+    imagenet_real = _collect_images(imagenet_root) if imagenet_root is not None else []
 
     all_real = cifake_real + imagenet_real
     all_fake = cifake_fake
 
     if not all_real or not all_fake:
         raise FileNotFoundError(
-            "Dataset preparation failed: ensure dataset/cifake and dataset/imagenet_mini contain valid images"
+            "Dataset preparation failed: ensure CIFAKE exists and contains valid REAL/FAKE images"
         )
 
     split_real = _split_data(all_real, train_ratio, val_ratio, seed)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -99,6 +100,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if platform.system().lower() == "windows" and args.compile:
+        print("Disabling --compile on Windows for runtime stability.")
+        args.compile = False
+
     seed_everything(args.seed)
 
     output_dir = Path(args.output_dir)
