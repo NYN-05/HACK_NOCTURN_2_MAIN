@@ -14,6 +14,7 @@ from models.efficientnet_forensics import EfficientNetForensics
 from preprocessing.ela import ELAGenerator
 from utils.checkpointing import load_checkpoint
 from utils.device import resolve_device, use_cuda
+from utils.warnings_control import suppress_noisy_warnings
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,6 +28,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    suppress_noisy_warnings()
     args = parse_args()
     device = resolve_device(args.device)
     cuda_enabled = use_cuda(device)

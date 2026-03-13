@@ -103,21 +103,38 @@ def _find_imagenet_root(search_roots: Sequence[Path]) -> Path | None:
         if not root.exists():
             continue
 
-        if _collect_images(root):
-            return root
-
-        for candidate in root.rglob("imagenet-mini"):
-            if _collect_images(candidate):
+        for candidate in root.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            if "imagenet-mini" in candidate.name.lower() and _collect_images(candidate):
                 return candidate
 
     return None
 
 
+def _has_processed_dataset(output_root: Path) -> bool:
+    required = [
+        output_root / "train" / "real",
+        output_root / "train" / "fake",
+        output_root / "val" / "real",
+        output_root / "val" / "fake",
+        output_root / "test" / "real",
+        output_root / "test" / "fake",
+    ]
+
+    for folder in required:
+        if not folder.exists():
+            return False
+        if not _collect_images(folder):
+            return False
+    return True
+
+
 def _safe_copy(source_file: Path, destination_file: Path) -> bool:
     destination_file.parent.mkdir(parents=True, exist_ok=True)
+    if destination_file.exists():
+        return True
     try:
-        with Image.open(source_file) as img:
-            img.verify()
         shutil.copy2(source_file, destination_file)
         return True
     except (UnidentifiedImageError, OSError):
@@ -164,12 +181,28 @@ def prepare_dataset(
     """
     LOGGER.info("Preparing dataset from CIFAKE + ImageNet Mini")
 
+    if not (0.0 < train_ratio < 1.0):
+        raise ValueError("train_ratio must be between 0 and 1")
+    if not (0.0 < val_ratio < 1.0):
+        raise ValueError("val_ratio must be between 0 and 1")
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio + val_ratio must be < 1")
+
+    if _has_processed_dataset(output_root):
+        LOGGER.info("Processed dataset already exists at %s. Skipping rebuild.", output_root)
+        return
+
     extracted_root = _extract_zip_archives(output_root)
 
-    cifake_root = _find_cifake_root([cifake_dir, output_root, extracted_root])
-    imagenet_root = _find_imagenet_root([imagenet_mini_dir, output_root / "imagenet-mini", extracted_root])
+    # Search extracted paths before output_root to avoid Windows case-insensitive
+    # confusion with processed folders (real/fake vs REAL/FAKE).
+    cifake_root = _find_cifake_root([cifake_dir, extracted_root, output_root])
+    imagenet_root = _find_imagenet_root([imagenet_mini_dir, extracted_root, output_root / "imagenet-mini"])
 
     if cifake_root is None:
+        if _has_processed_dataset(output_root):
+            LOGGER.info("Using existing processed dataset at %s.", output_root)
+            return
         raise FileNotFoundError(
             "CIFAKE source not found. Expected train/test with REAL/FAKE folders under dataset paths or extracted zips."
         )
@@ -198,8 +231,6 @@ def prepare_dataset(
     for split in ["train", "val", "test"]:
         for class_name in ["real", "fake"]:
             split_dir = output_root / split / class_name
-            if split_dir.exists():
-                shutil.rmtree(split_dir)
             split_dir.mkdir(parents=True, exist_ok=True)
 
     copied_count = 0
@@ -310,7 +341,14 @@ def parse_args():
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not (0.0 < args.train_ratio < 1.0):
+        raise ValueError("--train-ratio must be between 0 and 1")
+    if not (0.0 < args.val_ratio < 1.0):
+        raise ValueError("--val-ratio must be between 0 and 1")
+    if args.train_ratio + args.val_ratio >= 1.0:
+        raise ValueError("--train-ratio + --val-ratio must be < 1")
+    return args
 
 
 def main():

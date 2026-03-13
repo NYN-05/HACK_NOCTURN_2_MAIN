@@ -19,14 +19,15 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 goto :fail
 )
 
-echo [2/6] Activating virtual environment...
-call ".venv\Scripts\activate.bat"
-if errorlevel 1 goto :fail
+set "VENV_PYTHON=.venv\Scripts\python.exe"
+set "VENV_PIP=.venv\Scripts\pip.exe"
+
+echo [2/6] Using virtual environment: %VENV_PYTHON%
 
 echo [3/6] Installing dependencies...
-python -m pip install --upgrade pip
+"%VENV_PYTHON%" -m pip install --upgrade pip
 if errorlevel 1 goto :fail
-pip install -r requirements.txt
+"%VENV_PIP%" install -r requirements.txt
 if errorlevel 1 goto :fail
 
 if /I "%MODE%"=="api" goto :api_only
@@ -38,22 +39,22 @@ goto :help
 
 :full
 echo [4/6] Preparing merged dataset layout...
-python -m training.dataset_loader
+"%VENV_PYTHON%" -m training.dataset_loader
 if errorlevel 1 goto :fail
 
 echo [5/6] Training ViT and exporting ONNX...
-python -m training.train_vit --epochs 8 --batch-size 16 --export-onnx
+"%VENV_PYTHON%" -m training.train_vit --epochs 8 --batch-size 16 --export-onnx
 if errorlevel 1 goto :fail
 
 goto :start_api
 
 :train_only
 echo [4/5] Preparing merged dataset layout...
-python -m training.dataset_loader
+"%VENV_PYTHON%" -m training.dataset_loader
 if errorlevel 1 goto :fail
 
 echo [5/5] Training ViT and exporting ONNX...
-python -m training.train_vit --epochs 8 --batch-size 16 --export-onnx
+"%VENV_PYTHON%" -m training.train_vit --epochs 8 --batch-size 16 --export-onnx
 if errorlevel 1 goto :fail
 
 echo [DONE] Training completed.
@@ -71,7 +72,7 @@ goto :start_api
 
 :start_api
 echo [6/6] Starting FastAPI service on http://0.0.0.0:8000 ...
-uvicorn api.main:app --host 0.0.0.0 --port 8000
+"%VENV_PYTHON%" -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 if errorlevel 1 goto :fail
 
 goto :success

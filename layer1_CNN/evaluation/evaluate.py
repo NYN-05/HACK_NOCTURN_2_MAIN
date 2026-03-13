@@ -14,6 +14,7 @@ from evaluation.metrics import compute_metrics
 from models.efficientnet_forensics import EfficientNetForensics
 from utils.checkpointing import load_checkpoint
 from utils.device import resolve_device, use_cuda
+from utils.warnings_control import suppress_noisy_warnings
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,10 +34,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    suppress_noisy_warnings()
     args = parse_args()
-    if platform.system().lower() == "windows" and args.compile:
-        print("Disabling --compile on Windows for runtime stability.")
+    if args.compile:
+        print("--compile is currently disabled in this project for stability.")
         args.compile = False
+
+    if platform.system().lower() == "windows" and args.num_workers > 0:
+        print("Forcing num_workers=0 on Windows for multiprocessing stability.")
+        args.num_workers = 0
 
     device = resolve_device(args.device)
     cuda_enabled = use_cuda(device)
@@ -66,16 +72,7 @@ def main() -> None:
     if channels_last_enabled:
         model = model.to(memory_format=torch.channels_last)
 
-    if args.compile and cuda_enabled and hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model, mode="reduce-overhead")
-            with torch.inference_mode():
-                warmup = torch.randn(1, 6, args.image_size, args.image_size, device=device)
-                if channels_last_enabled:
-                    warmup = warmup.contiguous(memory_format=torch.channels_last)
-                _ = model(warmup)
-        except Exception as exc:
-            print(f"torch.compile unavailable at runtime ({exc}). Continuing without compile.")
+    # torch.compile is intentionally disabled in this workflow due backend instability.
 
     checkpoint = load_checkpoint(args.checkpoint, map_location=str(device))
     model.load_state_dict(checkpoint["model_state_dict"])

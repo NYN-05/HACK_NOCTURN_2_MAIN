@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
 from pathlib import Path
 from typing import Dict
 
@@ -14,6 +13,7 @@ from models.efficientnet_forensics import EfficientNetForensics
 from preprocessing.ela import ELAGenerator
 from utils.checkpointing import load_checkpoint
 from utils.device import resolve_device, use_cuda
+from utils.warnings_control import suppress_noisy_warnings
 
 
 class ForensicsInferenceEngine:
@@ -45,16 +45,8 @@ class ForensicsInferenceEngine:
         self.model.to(self.device)
         if self.channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
-        if compile_model and self.cuda_enabled and hasattr(torch, "compile"):
-            try:
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-                with torch.inference_mode():
-                    warmup = torch.randn(1, 6, image_size, image_size, device=self.device)
-                    if self.channels_last:
-                        warmup = warmup.contiguous(memory_format=torch.channels_last)
-                    _ = self.model(warmup)
-            except Exception as exc:
-                print(f"torch.compile unavailable at runtime ({exc}). Continuing without compile.")
+        if compile_model:
+            print("--compile is currently disabled in this project for stability.")
         self.model.eval()
 
         self.resize = transforms.Resize((image_size, image_size))
@@ -110,6 +102,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    suppress_noisy_warnings()
     args = parse_args()
 
     if not Path(args.image).exists():
@@ -119,7 +112,7 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         device=args.device,
         image_size=args.image_size,
-        compile_model=(False if platform.system().lower() == "windows" else args.compile),
+        compile_model=False,
         channels_last=args.channels_last,
     )
     result = engine.predict(args.image)

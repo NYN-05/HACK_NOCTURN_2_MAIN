@@ -1,3 +1,4 @@
+import ctypes
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,17 @@ class ONNXDetector:
         if not self.onnx_path.exists():
             raise FileNotFoundError(f"ONNX model not found: {self.onnx_path}")
 
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        available_providers = ort.get_available_providers()
+        providers = []
+
+        if "CUDAExecutionProvider" in available_providers and _cuda_runtime_ready():
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
+
+        providers = [provider for provider in providers if provider in available_providers]
+        if not providers:
+            raise RuntimeError(f"No compatible ONNX Runtime provider found. Available: {available_providers}")
+
         self.session = ort.InferenceSession(self.onnx_path.as_posix(), providers=providers)
         self.input_name = self.session.get_inputs()[0].name
 
@@ -39,3 +50,12 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
 def detect_ai_generated(image_path: str | Path) -> dict:
     detector = ONNXDetector()
     return detector.predict(image_path)
+
+
+def _cuda_runtime_ready() -> bool:
+    """Return True when the required CUDA runtime dependencies are available."""
+    try:
+        ctypes.CDLL("cudnn64_9.dll")
+    except OSError:
+        return False
+    return True

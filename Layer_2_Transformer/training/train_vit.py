@@ -1,5 +1,6 @@
 import argparse
 import logging
+import warnings
 from pathlib import Path
 
 import torch
@@ -8,6 +9,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from transformers import ViTForImageClassification
+from transformers.utils import logging as hf_logging
 
 from training.dataset_loader import build_dataloaders, prepare_dataset
 from utils.config import (
@@ -23,11 +25,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def build_model() -> ViTForImageClassification:
-    model = ViTForImageClassification.from_pretrained(
-        PRETRAINED_MODEL_NAME,
-        num_labels=NUM_CLASSES,
-        ignore_mismatched_sizes=True,
-    )
+    prev_hf_verbosity = hf_logging.get_verbosity()
+    try:
+        # Suppress expected classifier-shape warnings when adapting ImageNet heads to 2 classes.
+        hf_logging.set_verbosity_error()
+        model = ViTForImageClassification.from_pretrained(
+            PRETRAINED_MODEL_NAME,
+            num_labels=NUM_CLASSES,
+            ignore_mismatched_sizes=True,
+        )
+    finally:
+        hf_logging.set_verbosity(prev_hf_verbosity)
     return model
 
 
@@ -88,15 +96,25 @@ def export_onnx(model: nn.Module, output_path: Path, device: torch.device, image
 
     wrapper = OnnxWrapper(model).to(device)
 
-    torch.onnx.export(
-        wrapper,
-        dummy_input,
-        output_path.as_posix(),
-        input_names=["pixel_values"],
-        output_names=["logits"],
-        dynamic_axes={"pixel_values": {0: "batch_size"}, "logits": {0: "batch_size"}},
-        opset_version=17,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"You are using the legacy TorchScript-based ONNX export.*",
+            category=DeprecationWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Converting a tensor to a Python boolean might cause the trace to be incorrect.*",
+        )
+        torch.onnx.export(
+            wrapper,
+            dummy_input,
+            output_path.as_posix(),
+            input_names=["pixel_values"],
+            output_names=["logits"],
+            dynamic_axes={"pixel_values": {0: "batch_size"}, "logits": {0: "batch_size"}},
+            opset_version=17,
+        )
     LOGGER.info("ONNX model exported: %s", output_path)
 
 
@@ -113,11 +131,25 @@ def parse_args():
     parser.add_argument("--model-out", type=Path, default=BEST_MODEL_PATH)
     parser.add_argument("--onnx-out", type=Path, default=ONNX_MODEL_PATH)
     parser.add_argument("--image-size", type=int, default=224)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.epochs < 1:
+        LOGGER.warning("Requested epochs %d is invalid. Using minimum allowed (1).", args.epochs)
+        args.epochs = 1
+    if args.epochs > 10:
+        LOGGER.warning("Requested epochs %d exceeds max allowed (10). Capping to 10.", args.epochs)
+        args.epochs = 10
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be >= 1")
+    if args.num_workers < 0:
+        raise ValueError("--num-workers must be >= 0")
+    return args
 
 
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA GPU is required for training, but CUDA is not available on this machine.")
+
+    device = torch.device("cuda")
     LOGGER.info("Using device: %s", device)
 
     if args.prepare_dataset:

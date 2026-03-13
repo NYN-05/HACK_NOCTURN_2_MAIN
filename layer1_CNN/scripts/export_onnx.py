@@ -6,6 +6,7 @@ import torch
 
 from models.efficientnet_forensics import EfficientNetForensics
 from utils.checkpointing import load_checkpoint
+from utils.warnings_control import suppress_noisy_warnings
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,6 +20,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    suppress_noisy_warnings()
     args = parse_args()
 
     if args.num_cpu_threads > 0:

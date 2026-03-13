@@ -19,6 +19,7 @@ from models.efficientnet_forensics import EfficientNetForensics
 from utils.checkpointing import save_checkpoint
 from utils.device import resolve_device, use_cuda
 from utils.reproducibility import seed_everything
+from utils.warnings_control import suppress_noisy_warnings
 
 
 def run_epoch(
@@ -78,7 +79,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--dataset-root", required=True, help="Root path containing CASIA/CoMoFoD/CG1050")
     parser.add_argument("--output-dir", default="artifacts", help="Directory for checkpoints and metrics")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -95,15 +96,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision when CUDA is used")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.epochs > 10:
+        parser.error("--epochs cannot be greater than 10")
+    return args
 
 
 def main() -> None:
+    suppress_noisy_warnings()
     args = parse_args()
-    if platform.system().lower() == "windows" and args.compile:
-        print("Disabling --compile on Windows for runtime stability.")
-        args.compile = False
-
     seed_everything(args.seed)
 
     output_dir = Path(args.output_dir)
@@ -114,8 +115,12 @@ def main() -> None:
     amp_enabled = bool(args.amp and cuda_enabled)
     channels_last_enabled = bool(args.channels_last and cuda_enabled)
 
-    if args.compile and args.data_parallel:
-        print("Both --compile and --data-parallel were set. Prioritizing --data-parallel and disabling --compile.")
+    if platform.system().lower() == "windows" and args.num_workers > 0:
+        print("Forcing num_workers=0 on Windows for multiprocessing stability.")
+        args.num_workers = 0
+
+    if args.compile:
+        print("--compile is currently disabled in this project for stability.")
         args.compile = False
 
     if args.num_cpu_threads > 0:
@@ -145,22 +150,7 @@ def main() -> None:
     if channels_last_enabled:
         model = model.to(memory_format=torch.channels_last)
 
-    if args.compile and cuda_enabled and not args.data_parallel and hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model, mode="max-autotune")
-            # Trigger backend creation once so Triton issues are caught early.
-            with torch.inference_mode():
-                warmup = torch.randn(1, 6, args.image_size, args.image_size, device=device)
-                if channels_last_enabled:
-                    warmup = warmup.contiguous(memory_format=torch.channels_last)
-                _ = model(warmup)
-            print("Using torch.compile(max-autotune)")
-        except Exception as exc:
-            print(f"torch.compile unavailable at runtime ({exc}). Continuing without compile.")
-            args.compile = False
-            model = EfficientNetForensics(pretrained=True).to(device)
-            if channels_last_enabled:
-                model = model.to(memory_format=torch.channels_last)
+    # torch.compile is intentionally disabled in this workflow due backend instability.
 
     if cuda_enabled and args.data_parallel and torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
