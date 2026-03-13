@@ -1,0 +1,35 @@
+# Python virtual environments
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# Oversized file blocked by GitHub LFS 2GB limit
+layer1_CNN/dataset/dk84bmnyw9-2.zip
+layer1_CNN/dataset/
+layer1_CNN/artifacts/
+
+#IMAGE
+.png
+.jpg
+.jpeg
+.gif
+.bmp
+
+**/dataset/
