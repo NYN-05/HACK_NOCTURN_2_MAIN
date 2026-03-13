@@ -291,6 +291,8 @@ def build_dataloaders(
     batch_size: int,
     num_workers: int,
     image_size: int = 224,
+    prefetch_factor: int = 4,
+    persistent_workers: bool = True,
 ):
     train_transform, eval_transform = build_transforms(image_size=image_size)
 
@@ -308,26 +310,30 @@ def build_dataloaders(
     val_ds = VeriSightImageDataset(val_paths, val_labels, transform=eval_transform)
     test_ds = VeriSightImageDataset(test_paths, test_labels, transform=eval_transform)
 
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": True,
+    }
+
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["persistent_workers"] = persistent_workers
+
     train_loader = DataLoader(
         train_ds,
-        batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
+        **loader_kwargs,
     )
     test_loader = DataLoader(
         test_ds,
-        batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
+        **loader_kwargs,
     )
 
     return train_loader, val_loader, test_loader

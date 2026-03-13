@@ -1,5 +1,6 @@
 import argparse
 import logging
+import time
 import warnings
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def build_model() -> ViTForImageClassification:
     return model
 
 
-def run_epoch(model, loader, criterion, device, optimizer=None):
+def run_epoch(model, loader, criterion, device, optimizer=None, scaler=None, use_amp=False, max_steps=0):
     is_train = optimizer is not None
     model.train() if is_train else model.eval()
 
@@ -49,22 +50,31 @@ def run_epoch(model, loader, criterion, device, optimizer=None):
 
     with torch.set_grad_enabled(is_train):
         for batch in tqdm(loader, total=len(loader), leave=False):
-            pixel_values = batch["pixel_values"].to(device)
-            labels = batch["labels"].to(device)
+            pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+            labels = batch["labels"].to(device, non_blocking=True)
 
-            outputs = model(pixel_values=pixel_values)
-            logits = outputs.logits
-            loss = criterion(logits, labels)
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+                outputs = model(pixel_values=pixel_values)
+                logits = outputs.logits
+                loss = criterion(logits, labels)
 
             if is_train:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
+                if scaler is not None and use_amp:
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
             batch_acc = compute_accuracy(logits.detach(), labels)
             loss_sum += loss.item()
             acc_sum += batch_acc
             steps += 1
+
+            if max_steps > 0 and steps >= max_steps:
+                break
 
     return summarize_epoch(loss_sum, acc_sum, steps)
 
@@ -125,7 +135,15 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--num-workers", type=int, default=6)
+    parser.add_argument("--prefetch-factor", type=int, default=4)
+    parser.add_argument("--no-persistent-workers", action="store_true")
+    parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision training")
+    parser.add_argument("--no-tf32", action="store_true", help="Disable TF32 matmul/cudnn acceleration")
+    parser.add_argument("--channels-last", action="store_true", help="Use channels_last memory format")
+    parser.add_argument("--max-train-steps", type=int, default=0, help="Cap train batches per epoch (0 = full)")
+    parser.add_argument("--max-val-steps", type=int, default=0, help="Cap val batches per epoch (0 = full)")
+    parser.add_argument("--max-test-steps", type=int, default=0, help="Cap test batches (0 = full)")
     parser.add_argument("--prepare-dataset", action="store_true")
     parser.add_argument("--export-onnx", action="store_true")
     parser.add_argument("--model-out", type=Path, default=BEST_MODEL_PATH)
@@ -142,6 +160,10 @@ def parse_args():
         raise ValueError("--batch-size must be >= 1")
     if args.num_workers < 0:
         raise ValueError("--num-workers must be >= 0")
+    if args.prefetch_factor < 1:
+        raise ValueError("--prefetch-factor must be >= 1")
+    if args.max_train_steps < 0 or args.max_val_steps < 0 or args.max_test_steps < 0:
+        raise ValueError("--max-*-steps values must be >= 0")
     return args
 
 
@@ -152,6 +174,11 @@ def train(args):
     device = torch.device("cuda")
     LOGGER.info("Using device: %s", device)
 
+    if not args.no_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
     if args.prepare_dataset:
         prepare_dataset(output_root=args.dataset_root)
 
@@ -160,29 +187,55 @@ def train(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         image_size=args.image_size,
+        prefetch_factor=args.prefetch_factor,
+        persistent_workers=not args.no_persistent_workers,
     )
 
     model = build_model().to(device)
+    if args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
+    use_amp = not args.no_amp
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     best_val_acc = -1.0
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, criterion, device, optimizer=optimizer)
-        val_metrics = run_epoch(model, val_loader, criterion, device, optimizer=None)
+        epoch_start = time.perf_counter()
+        train_metrics = run_epoch(
+            model,
+            train_loader,
+            criterion,
+            device,
+            optimizer=optimizer,
+            scaler=scaler,
+            use_amp=use_amp,
+            max_steps=args.max_train_steps,
+        )
+        val_metrics = run_epoch(
+            model,
+            val_loader,
+            criterion,
+            device,
+            optimizer=None,
+            use_amp=use_amp,
+            max_steps=args.max_val_steps,
+        )
         scheduler.step()
+        epoch_minutes = (time.perf_counter() - epoch_start) / 60.0
 
         LOGGER.info(
-            "Epoch %d/%d | train_loss=%.4f train_acc=%.4f | val_loss=%.4f val_acc=%.4f",
+            "Epoch %d/%d | train_loss=%.4f train_acc=%.4f | val_loss=%.4f val_acc=%.4f | minutes=%.2f",
             epoch,
             args.epochs,
             train_metrics["loss"],
             train_metrics["accuracy"],
             val_metrics["loss"],
             val_metrics["accuracy"],
+            epoch_minutes,
         )
 
         if val_metrics["accuracy"] > best_val_acc:
@@ -191,7 +244,15 @@ def train(args):
             LOGGER.info("New best model saved to %s (val_acc=%.4f)", args.model_out, best_val_acc)
 
     load_checkpoint(model, args.model_out, device)
-    test_metrics = run_epoch(model, test_loader, criterion, device, optimizer=None)
+    test_metrics = run_epoch(
+        model,
+        test_loader,
+        criterion,
+        device,
+        optimizer=None,
+        use_amp=use_amp,
+        max_steps=args.max_test_steps,
+    )
     LOGGER.info("Test metrics | loss=%.4f acc=%.4f", test_metrics["loss"], test_metrics["accuracy"])
 
     if args.export_onnx:
