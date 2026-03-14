@@ -23,7 +23,8 @@ Thumbs.db
 # Oversized file blocked by GitHub LFS 2GB limit
 layer1_CNN/dataset/dk84bmnyw9-2.zip
 layer1_CNN/dataset/
-layer1_CNN/artifacts/
+Layer_2_Transformer/dataset/
+Layer_2_Transformer/
 
 #IMAGE
 .png
@@ -33,3 +34,14 @@ layer1_CNN/artifacts/
 .bmp
 
 **/dataset/
+
+# Model artifacts and checkpoints (do not push large binaries)
+*.pth
+*.pt
+*.onnx
+
+# Common training/output artifact folders
+GAN/checkpoints/
+layer1/artifacts/
+layer2/models/
+layer4/models/
