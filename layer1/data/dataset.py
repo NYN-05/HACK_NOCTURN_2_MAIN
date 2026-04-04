@@ -1,26 +1,24 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 
-from preprocessing.ela import ELAGenerator
+from engine.data.manifest_utils import LabeledImage as Sample
+from engine.data.manifest_utils import discover_labeled_images, split_labeled_images
+
+try:
+    from preprocessing.ela import ELAGenerator
+except ModuleNotFoundError:
+    from layer1.preprocessing.ela import ELAGenerator
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-
-
-@dataclass
-class Sample:
-    path: Path
-    label: int
-    dataset_name: str
 
 
 class ForensicsDataset(Dataset):
@@ -46,6 +44,15 @@ class ForensicsDataset(Dataset):
                 transforms.RandomRotation(degrees=8),
             ]
         )
+        self.photo_augment = transforms.Compose(
+            [
+                transforms.ColorJitter(brightness=0.18, contrast=0.18, saturation=0.12, hue=0.04),
+                transforms.RandomApply(
+                    [transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.2))],
+                    p=0.25,
+                ),
+            ]
+        )
 
         self.base_resize = transforms.Resize((image_size, image_size))
         self.to_tensor = transforms.ToTensor()
@@ -69,6 +76,7 @@ class ForensicsDataset(Dataset):
 
         if self.training:
             image = self.geom_augment(image)
+            image = self.photo_augment(image)
 
         ela = self.ela_generator.generate(image)
 
@@ -130,35 +138,11 @@ def discover_samples(dataset_root: str) -> List[Sample]:
     if not root.exists():
         raise FileNotFoundError(f"Dataset root does not exist: {dataset_root}")
 
-    samples: List[Sample] = []
-
-    dataset_dirs = {
-        "casia": ["CASIA2", "CASIA2.0_Groundtruth"],
-        "comofod": ["comofod_small", "CoMoFoD_small_v2"],
-        "cg1050": ["CG-1050", "CG1050", "cg1050"],
-    }
-
-    discovered_paths = set()
-
-    for dataset_name, hints in dataset_dirs.items():
-        for hint in hints:
-            for match in root.rglob(hint):
-                if match.is_dir():
-                    discovered_paths.add((dataset_name, match.resolve()))
-
-    if not discovered_paths:
-        discovered_paths.add(("generic", root.resolve()))
-
-    for dataset_name, folder in sorted(discovered_paths, key=lambda x: str(x[1])):
-        for image_path in _iter_images(folder):
-            label = _label_from_path(image_path)
-            if label is None:
-                continue
-            samples.append(Sample(path=image_path, label=label, dataset_name=dataset_name))
+    samples = discover_labeled_images(root, dataset_name=root.name.lower())
 
     if not samples:
         raise RuntimeError(
-            "No labeled images were discovered. Check dataset folder names and image organization."
+            "No labeled images were discovered. Check dataset folder names, manifests, and image organization."
         )
 
     return samples
@@ -171,34 +155,13 @@ def stratified_split(
     test_ratio: float = 0.15,
     seed: int = 42,
 ) -> Tuple[List[Sample], List[Sample], List[Sample]]:
-    if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
-        raise ValueError("Split ratios must sum to 1.0")
-
-    grouped: Dict[int, List[Sample]] = {0: [], 1: []}
-    for sample in samples:
-        grouped[sample.label].append(sample)
-
-    rng = random.Random(seed)
-
-    train, val, test = [], [], []
-
-    for label, group in grouped.items():
-        if not group:
-            raise RuntimeError(f"No samples found for label {label}")
-
-        rng.shuffle(group)
-        n = len(group)
-        n_train = int(n * train_ratio)
-        n_val = int(n * val_ratio)
-
-        train.extend(group[:n_train])
-        val.extend(group[n_train : n_train + n_val])
-        test.extend(group[n_train + n_val :])
-
-    rng.shuffle(train)
-    rng.shuffle(val)
-    rng.shuffle(test)
-    return train, val, test
+    return split_labeled_images(
+        samples,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        seed=seed,
+    )
 
 
 def build_dataloaders(
@@ -210,6 +173,7 @@ def build_dataloaders(
     pin_memory: bool = False,
     prefetch_factor: int = 2,
     multiprocessing_context: str = "spawn",
+    balanced_sampling: bool = True,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     samples = discover_samples(dataset_root)
     train_samples, val_samples, test_samples = stratified_split(samples, seed=seed)
@@ -227,11 +191,28 @@ def build_dataloaders(
         loader_kwargs["prefetch_factor"] = prefetch_factor
         loader_kwargs["multiprocessing_context"] = multiprocessing_context
 
+    train_loader_kwargs = {
+        "batch_size": batch_size,
+        **loader_kwargs,
+    }
+
+    if balanced_sampling:
+        labels = [sample.label for sample in train_samples]
+        class_counts = np.bincount(labels, minlength=2)
+        class_weights = [1.0 / max(1, class_counts[label]) for label in labels]
+        sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(class_weights, dtype=torch.double),
+            num_samples=len(class_weights),
+            replacement=True,
+        )
+        train_loader_kwargs["sampler"] = sampler
+        train_loader_kwargs["shuffle"] = False
+    else:
+        train_loader_kwargs["shuffle"] = True
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        **loader_kwargs,
+        **train_loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,

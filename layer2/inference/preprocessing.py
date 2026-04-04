@@ -1,16 +1,9 @@
-from pathlib import Path
+from typing import Any
 
 import numpy as np
-from PIL import Image
+
+from engine.preprocessing.shared_pipeline import preprocess_all
 
 
-def preprocess_image(image_path: str | Path, image_size: int = 224) -> np.ndarray:
-    image = Image.open(image_path).convert("RGB")
-    image = image.resize((image_size, image_size))
-
-    array = np.asarray(image).astype("float32") / 255.0
-    array = (array - 0.5) / 0.5
-    array = np.transpose(array, (2, 0, 1))
-    array = np.expand_dims(array, axis=0)
-
-    return array
+def preprocess_image(image: Any, image_size: int = 224) -> np.ndarray:
+    return np.asarray(preprocess_all(image, image_size=image_size)["clip_input"], dtype=np.float32)

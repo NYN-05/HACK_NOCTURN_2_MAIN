@@ -5,15 +5,15 @@ This frontend allows you to upload an image and optional metadata, then call the
 ## What It Connects To
 
 - Backend endpoint: `/api/v1/verify`
-- Backend implementation: `pipeline/api_router.py`
-- Orchestrator used: `pipeline/orchestrator.py` (same flow used by `generate_final_score.py`)
+- Backend implementation: `engine/pipeline/api_router.py`
+- Orchestrator used: `engine/pipeline/orchestrator.py` (same flow used by `generate_final_score.py`)
 
 ## Local Setup
 
 1. Start backend API from project root:
 
 	```bash
-	uvicorn pipeline.app:app --reload --host 127.0.0.1 --port 8000
+	uvicorn engine.pipeline.app:app --reload --host 127.0.0.1 --port 8000
 	```
 
 2. Start frontend:

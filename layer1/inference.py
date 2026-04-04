@@ -3,14 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import torch
-from PIL import Image
-from torchvision import transforms
 
 from models.efficientnet_forensics import EfficientNetForensics
-from preprocessing.ela import ELAGenerator
+from engine.preprocessing.shared_pipeline import preprocess_all
 from utils.checkpointing import load_checkpoint
 from utils.device import resolve_device, use_cuda
 from utils.warnings_control import suppress_noisy_warnings
@@ -29,7 +27,6 @@ class ForensicsInferenceEngine:
         self.cuda_enabled = use_cuda(self.device)
         self.channels_last = bool(channels_last and self.cuda_enabled)
         self.image_size = image_size
-        self.ela_generator = ELAGenerator(jpeg_quality=90, ela_scale=10.0)
 
         if self.cuda_enabled:
             torch.backends.cudnn.benchmark = True
@@ -49,35 +46,22 @@ class ForensicsInferenceEngine:
             print("--compile is currently disabled in this project for stability.")
         self.model.eval()
 
-        self.resize = transforms.Resize((image_size, image_size))
-        self.to_tensor = transforms.ToTensor()
-        self.rgb_normalize = transforms.Normalize(
-            mean=(0.485, 0.456, 0.406),
-            std=(0.229, 0.224, 0.225),
-        )
-        self.ela_normalize = transforms.Normalize(
-            mean=(0.5, 0.5, 0.5),
-            std=(0.5, 0.5, 0.5),
-        )
+    def preprocess(self, image: Any) -> torch.Tensor:
+        bundle = preprocess_all(image, image_size=self.image_size)
+        return bundle["normalized"].to(self.device, non_blocking=True)
 
-    def preprocess(self, image_path: str) -> torch.Tensor:
-        image = Image.open(image_path).convert("RGB")
-        image = self.resize(image)
-        ela = self.ela_generator.generate(image)
+    def predict_from_preprocessed(self, preprocessed: Dict[str, Any]) -> Dict[str, object]:
+        tensor = preprocessed.get("normalized")
+        if tensor is None:
+            raise KeyError("preprocessed bundle must contain 'normalized'")
 
-        rgb = self.rgb_normalize(self.to_tensor(image))
-        ela_tensor = self.ela_normalize(self.to_tensor(ela))
-        fusion = torch.cat((rgb, ela_tensor), dim=0).unsqueeze(0)
-        fusion = fusion.to(self.device, non_blocking=True)
+        tensor = tensor.to(self.device, non_blocking=True)
         if self.channels_last:
-            fusion = fusion.contiguous(memory_format=torch.channels_last)
-        return fusion
+            tensor = tensor.contiguous(memory_format=torch.channels_last)
 
-    @torch.inference_mode()
-    def predict(self, image_path: str) -> Dict[str, object]:
-        tensor = self.preprocess(image_path)
-        with torch.amp.autocast(device_type=self.device.type, enabled=self.cuda_enabled):
-            logits = self.model(tensor)
+        with torch.inference_mode():
+            with torch.amp.autocast(device_type=self.device.type, enabled=self.cuda_enabled):
+                logits = self.model(tensor)
         probs = torch.softmax(logits, dim=1)
 
         manip_prob = float(probs[0, 1].item())
@@ -87,7 +71,42 @@ class ForensicsInferenceEngine:
             "cnn_score": round(manip_prob * 100.0, 2),
             "forgery_probability": manip_prob,
             "prediction": pred,
+            "uncertainty": round(max(0.0, min(1.0, 1.0 - abs((1.0 - manip_prob) - 0.5) * 2.0)), 4),
+            "backend": "torch",
+            "available": True,
         }
+
+    def _predict_from_tensor(self, tensor: torch.Tensor) -> Dict[str, object]:
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+        if tensor.ndim != 4:
+            raise ValueError(f"Expected tensor with shape [B, C, H, W], got {tuple(tensor.shape)}")
+
+        tensor = tensor.to(self.device, non_blocking=True)
+        if self.channels_last:
+            tensor = tensor.contiguous(memory_format=torch.channels_last)
+
+        with torch.inference_mode():
+            with torch.amp.autocast(device_type=self.device.type, enabled=self.cuda_enabled):
+                logits = self.model(tensor)
+        probs = torch.softmax(logits, dim=1)
+
+        manip_prob = float(probs[0, 1].item())
+        pred = "manipulated" if manip_prob >= 0.5 else "authentic"
+
+        return {
+            "cnn_score": round(manip_prob * 100.0, 2),
+            "forgery_probability": manip_prob,
+            "prediction": pred,
+            "uncertainty": round(max(0.0, min(1.0, 1.0 - abs((1.0 - manip_prob) - 0.5) * 2.0)), 4),
+            "backend": "torch",
+            "available": True,
+        }
+
+    @torch.inference_mode()
+    def predict(self, image_path: str) -> Dict[str, object]:
+        tensor = self.preprocess(image_path)
+        return self._predict_from_tensor(tensor)
 
 
 def parse_args() -> argparse.Namespace:

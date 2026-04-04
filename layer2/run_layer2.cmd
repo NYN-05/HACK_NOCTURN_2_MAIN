@@ -13,14 +13,18 @@ if /I "%MODE%"=="-h" goto :help
 echo [Layer-2] Working directory: %CD%
 echo [Layer-2] Mode: %MODE%
 
-echo [1/6] Creating virtual environment if missing...
-if not exist ".venv\Scripts\python.exe" (
-    python -m venv .venv
+set "ROOT_VENV=%~dp0..\.venv"
+set "VENV_DIR=%ROOT_VENV%"
+
+echo [1/6] Ensuring virtual environment...
+if not exist "%VENV_DIR%\Scripts\python.exe" (
+    python -m venv "%ROOT_VENV%"
     if errorlevel 1 goto :fail
+    set "VENV_DIR=%ROOT_VENV%"
 )
 
-set "VENV_PYTHON=.venv\Scripts\python.exe"
-set "VENV_PIP=.venv\Scripts\pip.exe"
+set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
+set "VENV_PIP=%VENV_DIR%\Scripts\pip.exe"
 
 echo [2/6] Using virtual environment: %VENV_PYTHON%
 

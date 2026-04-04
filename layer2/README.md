@@ -27,13 +27,13 @@ Layer_2_Transformer/
 
 ## Dataset Input
 
-Expected raw sources:
+Accepted source layouts:
 
-- `dataset/cifake/train/REAL`, `dataset/cifake/train/FAKE`
-- `dataset/cifake/test/REAL`, `dataset/cifake/test/FAKE`
-- `dataset/imagenet_mini/**` (all images treated as REAL)
+- Direct processed splits: `Data/train/{real,fake}`, `Data/val/{real,fake}`, `Data/test/{real,fake}`
+- CIFAKE-style splits anywhere under Data: `*/train/{REAL|real}/{FAKE|fake}` and `*/test/{REAL|real}/{FAKE|fake}`
+- Optional ImageNet Mini folder (`imagenet_mini` or `imagenet-mini`) for extra REAL samples
 
-Prepared output layout:
+Prepared output layout (if rebuild is needed):
 
 - `dataset/train/real`, `dataset/train/fake`
 - `dataset/val/real`, `dataset/val/fake`

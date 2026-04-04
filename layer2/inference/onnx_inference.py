@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
-from inference.preprocessing import preprocess_image
+from engine.preprocessing.shared_pipeline import preprocess_all
 from utils.config import ID_TO_LABEL, ONNX_MODEL_PATH
 
 
@@ -28,8 +28,7 @@ class ONNXDetector:
         self.session = ort.InferenceSession(self.onnx_path.as_posix(), providers=providers)
         self.input_name = self.session.get_inputs()[0].name
 
-    def predict(self, image_path: str | Path) -> dict:
-        pixel_values = preprocess_image(image_path)
+    def predict_from_pixel_values(self, pixel_values: np.ndarray) -> dict:
         logits = self.session.run(None, {self.input_name: pixel_values})[0]
 
         probs = _softmax(logits[0])
@@ -39,6 +38,16 @@ class ONNXDetector:
             "vit_score": int(round(fake_prob * 100)),
             "label": ID_TO_LABEL[1] if fake_prob >= 0.5 else ID_TO_LABEL[0],
         }
+
+    def predict_from_preprocessed(self, preprocessed: dict) -> dict:
+        pixel_values = preprocessed.get("clip_input")
+        if pixel_values is None:
+            raise KeyError("preprocessed bundle must contain 'clip_input'")
+        return self.predict_from_pixel_values(np.asarray(pixel_values, dtype=np.float32))
+
+    def predict(self, image_path: str | Path) -> dict:
+        pixel_values = preprocess_all(image_path)["clip_input"]
+        return self.predict_from_pixel_values(pixel_values)
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:

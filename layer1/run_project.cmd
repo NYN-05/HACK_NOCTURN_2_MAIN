@@ -3,11 +3,13 @@ setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
 
+set "ROOT_VENV_PY=%~dp0..\.venv\Scripts\python.exe"
+
 set PYTHON=python
-if exist ".venv\Scripts\python.exe" (
-	for /f %%i in ('.venv\Scripts\python.exe -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul') do set VENV_HAS_CUDA=%%i
+if exist "%ROOT_VENV_PY%" (
+	for /f %%i in ('"%ROOT_VENV_PY%" -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul') do set VENV_HAS_CUDA=%%i
 	if "!VENV_HAS_CUDA!"=="1" (
-		set PYTHON=.venv\Scripts\python.exe
+		set PYTHON=%ROOT_VENV_PY%
 	) else (
 		for /f %%i in ('python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul') do set SYS_HAS_CUDA=%%i
 		if "!SYS_HAS_CUDA!"=="1" set PYTHON=python

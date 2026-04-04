@@ -1,0 +1,70 @@
+{
+  "summary": {
+    "timestamp_utc": "2026-04-03T16:01:29.674775+00:00",
+    "dataset_root": "C:\\Users\\JHASHANK\\Downloads\\VERISIGHT_V1\\Data",
+    "split": "test",
+    "sample_count": 1,
+    "decision_counts": {
+      "AUTO_APPROVE": 1
+    },
+    "metrics": {
+      "accuracy": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "confusion_matrix": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ]
+      ],
+      "auc": null,
+      "ece": 1.0,
+      "abstain_rate": 0.0,
+      "coverage": 1.0,
+      "latency": {
+        "mean_ms": 476.0,
+        "p50_ms": 476.0,
+        "p90_ms": 476.0,
+        "p99_ms": 476.0
+      }
+    }
+  },
+  "per_sample": [
+    {
+      "path": "C:\\Users\\JHASHANK\\Downloads\\VERISIGHT_V1\\Data\\test\\fake\\fake_0000000.jpg",
+      "dataset_name": "test",
+      "group_id": "test/fake/fake",
+      "label": 1,
+      "decision": "AUTO_APPROVE",
+      "predicted_label": 0,
+      "correct": false,
+      "authenticity_score": 100,
+      "confidence": 0.4578,
+      "abstained": false,
+      "available_layers": [
+        "cnn"
+      ],
+      "layer_scores": {
+        "cnn": 100
+      },
+      "layer_reliabilities": {
+        "cnn": 0.9952
+      },
+      "effective_weights": {
+        "cnn": 1.0
+      },
+      "layer_status": {
+        "cnn": "ok",
+        "vit": "skipped",
+        "gan": "skipped",
+        "ocr": "skipped"
+      },
+      "processing_time_ms": 476
+    }
+  ]
+}

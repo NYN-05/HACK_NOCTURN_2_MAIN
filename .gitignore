@@ -1,47 +1,101 @@
-# Python virtual environments
-.venv/
-venv/
-**/.venv/
-**/venv/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# OS/editor files
+# ------------------------------
+# OS / Editor
+# ------------------------------
 .DS_Store
 Thumbs.db
+Desktop.ini
 .vscode/
+.idea/
+*.swp
+*.swo
 
-# Logs and temp
+# ------------------------------
+# Python
+# ------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+.python-version
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs / runtime
 *.log
+logs/
+
+# ------------------------------
+# Node / Frontend (frontend/)
+# ------------------------------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------
+# Project datasets and generated artifacts
+# ------------------------------
+# Root dataset directory requested to be excluded from git
+/Data/
+
+# Trained weights / checkpoints / large outputs
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
+
+# Generic ML outputs
+checkpoints/
+artifacts/
+outputs/
+runs/
+wandb/
+
+# Layer-specific generated folders
+layer1/artifacts/
+layer2/models/
+layer3/checkpoints/
+layer4/models/yolo_finetune/
+
+# Temporary files
 *.tmp
 *.temp
+*.bak
 
-# Oversized file blocked by GitHub LFS 2GB limit
-layer1_CNN/dataset/dk84bmnyw9-2.zip
-layer1_CNN/dataset/
-Layer_2_Transformer/dataset/
-Layer_2_Transformer/
-
-#IMAGE
-.png
-.jpg
-.jpeg
-.gif
-.bmp
-
-**/dataset/
-
-# Model artifacts and checkpoints (do not push large binaries)
+*.jpg
+*.jpeg
+*.png 
 *.pth
 *.pt
 *.onnx
-
-# Common training/output artifact folders
-GAN/checkpoints/
-layer1/artifacts/
-layer2/models/
-layer4/models/
+*.bin 

@@ -13,9 +13,9 @@ This document explains how to run the backend API and frontend UI for this proje
 Open a new terminal at project root.
 
 ```powershell
-cd C:\Users\JHASHANK\Downloads\Hack_Nocturne_26
+cd C:\Users\JHASHANK\Downloads\VERISIGHT_V1
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn pipeline.app:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn engine.pipeline.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Backend URLs:
@@ -29,7 +29,7 @@ Backend URLs:
 Open another terminal.
 
 ```powershell
-cd C:\Users\JHASHANK\Downloads\Hack_Nocturne_26\frontend
+cd C:\Users\JHASHANK\Downloads\VERISIGHT_V1\frontend
 npm install
 npm run dev
 ```
@@ -66,5 +66,39 @@ python -m pip install uvicorn fastapi python-multipart
 If you run npm commands from root accidentally, move to frontend folder first:
 
 ```powershell
-cd C:\Users\JHASHANK\Downloads\Hack_Nocturne_26\frontend
+cd C:\Users\JHASHANK\Downloads\VERISIGHT_V1\frontend
 ```
+
+## 4) Canonical End-to-End Benchmark
+
+Run a benchmark report with metrics + latency + calibration:
+
+```powershell
+python evaluation/evaluate_system.py --output-json evaluation/latest_benchmark.json --append-history
+```
+
+Key outputs:
+
+- `evaluation/latest_benchmark.json`
+- `evaluation/benchmark_history.json`
+
+Check regression status from saved benchmark history:
+
+```powershell
+python evaluation/check_regression.py --history-json evaluation/benchmark_history.json
+```
+
+Calibrate decision thresholds from a benchmark report that includes per-sample data:
+
+```powershell
+python evaluation/calibrate_thresholds.py --input-json evaluation/latest_benchmark.json --output-json evaluation/calibrated_thresholds.json
+```
+
+## 5) Runtime Tuning (Optional)
+
+Environment variables:
+
+- `VERISIGHT_MAX_CONCURRENT_REQUESTS` (default `4`)
+- `VERISIGHT_REQUEST_TIMEOUT_MS` (default `15000`)
+- `VERISIGHT_OCR_ENGINE` (`auto`, `easy`, `paddle`, `yolo`)
+- `VERISIGHT_OCR_GPU` (`true` / `false`)

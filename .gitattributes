@@ -1,3 +1,0 @@
-layer1_CNN/dataset/*.zip filter=lfs diff=lfs merge=lfs -text
-Layer_2_Transformer/models/*.pth filter=lfs diff=lfs merge=lfs -text
-Layer_2_Transformer/models/*.onnx filter=lfs diff=lfs merge=lfs -text

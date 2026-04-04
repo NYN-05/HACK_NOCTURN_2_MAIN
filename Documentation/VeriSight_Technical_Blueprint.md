@@ -469,8 +469,8 @@ sudo apt-get update && sudo apt-get install -y \
 
 ```bash
 # Create isolated virtual environment
-python3.11 -m venv venv
-source venv/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 
 # Upgrade package management tools
 pip install --upgrade pip setuptools wheel

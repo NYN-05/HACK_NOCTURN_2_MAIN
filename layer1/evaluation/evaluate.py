@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -17,9 +18,18 @@ from utils.device import resolve_device, use_cuda
 from utils.warnings_control import suppress_noisy_warnings
 
 
+def _default_dataset_root() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    for folder_name in ("DATA", "Data", "data"):
+        candidate = repo_root / folder_name
+        if candidate.exists():
+            return str(candidate)
+    return str(repo_root / "DATA")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate VeriSight Layer 1 model")
-    parser.add_argument("--dataset-root", required=True)
+    parser.add_argument("--dataset-root", default=_default_dataset_root())
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--image-size", type=int, default=224)

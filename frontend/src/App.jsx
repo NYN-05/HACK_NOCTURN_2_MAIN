@@ -15,11 +15,18 @@ function getTodayDateString() {
   return `${year}-${month}-${day}`
 }
 
+function confidenceBand(value) {
+  if (value >= 0.8) return 'High'
+  if (value >= 0.55) return 'Medium'
+  return 'Low'
+}
+
 function App() {
   const [imageFile, setImageFile] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [phase, setPhase] = useState('idle')
 
   const apiUrl = useMemo(() => {
     const base = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '')
@@ -36,6 +43,7 @@ function App() {
     setError('')
     setResult(null)
     setIsLoading(true)
+    setPhase('uploading')
 
     try {
       const formData = new FormData()
@@ -49,6 +57,7 @@ function App() {
         method: 'POST',
         body: formData,
       })
+      setPhase('analyzing')
 
       if (!response.ok) {
         let message = `Verification failed with status ${response.status}.`
@@ -65,12 +74,21 @@ function App() {
 
       const payload = await response.json()
       setResult(payload)
+      setPhase('completed')
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Unexpected error during verification.')
+      setPhase('failed')
     } finally {
       setIsLoading(false)
     }
   }
+
+  const fallbackWarnings = useMemo(() => {
+    if (!result?.layer_status) return []
+    return Object.entries(result.layer_status)
+      .filter(([, status]) => status !== 'ok')
+      .map(([layer]) => `${layer.toUpperCase()} ran in degraded mode`)
+  }, [result])
 
   return (
     <main className="page-shell">
@@ -105,6 +123,17 @@ function App() {
           </p>
 
           {error ? <p className="error-text">{error}</p> : null}
+
+          {isLoading ? (
+            <div className="progress-box">
+              <p>Pipeline status</p>
+              <strong>
+                {phase === 'uploading' && 'Uploading image'}
+                {phase === 'analyzing' && 'Running multi-layer analysis'}
+                {phase !== 'uploading' && phase !== 'analyzing' && 'Processing'}
+              </strong>
+            </div>
+          ) : null}
         </form>
 
         <section className="card result-card">
@@ -127,7 +156,24 @@ function App() {
                   <p className="key">Processing Time</p>
                   <p className="value">{result.processing_time_ms ?? 0} ms</p>
                 </div>
+                <div>
+                  <p className="key">Confidence</p>
+                  <p className="value">
+                    {Math.round((Number(result.confidence || 0) * 100))}% ({confidenceBand(Number(result.confidence || 0))})
+                  </p>
+                </div>
               </div>
+
+              {fallbackWarnings.length > 0 ? (
+                <div className="warn-box">
+                  <p className="key">Fallback Warnings</p>
+                  <ul>
+                    {fallbackWarnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               <div>
                 <p className="key">Layer Scores</p>
