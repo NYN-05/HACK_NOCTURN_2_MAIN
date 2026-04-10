@@ -24,7 +24,7 @@ except ModuleNotFoundError:
     from layer1.data.dataset import build_dataloaders
     from layer1.evaluation.metrics import compute_metrics
     from layer1.models.efficientnet_forensics import EfficientNetForensics
-    from layer1.utils.checkpointing import save_checkpoint
+    from layer1.utils.checkpointing import load_checkpoint, save_checkpoint
     from layer1.utils.reproducibility import seed_everything
     from layer1.utils.warnings_control import suppress_noisy_warnings
 
@@ -36,6 +36,19 @@ def _default_dataset_root() -> str:
         if candidate.exists():
             return str(candidate)
     return str(repo_root / "DATA")
+
+
+def _resolve_num_workers(requested_workers: int) -> int:
+    requested_workers = max(0, requested_workers)
+    if platform.system().lower() != "windows":
+        return requested_workers
+    if requested_workers == 0:
+        requested_workers = 2
+    return min(max(requested_workers, 2), 4)
+
+
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if isinstance(model, nn.DataParallel) else model
 
 
 def run_epoch(
@@ -130,6 +143,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping max norm (0 disables)")
     parser.add_argument("--label-smoothing", type=float, default=0.05, help="CrossEntropy label smoothing")
     parser.add_argument(
+        "--freeze-backbone-epochs",
+        type=int,
+        default=3,
+        help="Freeze the EfficientNet feature extractor for the first N epochs",
+    )
+    parser.add_argument(
         "--balanced-sampling",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -140,6 +159,18 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Use class-weighted CrossEntropy from train split distribution",
+    )
+    parser.add_argument(
+        "--fused-adamw",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use fused AdamW on CUDA when the local PyTorch build supports it",
+    )
+    parser.add_argument(
+        "--ela-cache-size",
+        type=int,
+        default=1024,
+        help="Per-worker cache size for generated ELA maps",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda")
@@ -171,9 +202,14 @@ def main() -> None:
     amp_enabled = bool(args.amp)
     channels_last_enabled = bool(args.channels_last)
 
-    if platform.system().lower() == "windows" and args.num_workers > 0:
-        print("Forcing num_workers=0 on Windows for multiprocessing stability.")
-        args.num_workers = 0
+    requested_workers = args.num_workers
+    args.num_workers = _resolve_num_workers(args.num_workers)
+    if args.num_workers != requested_workers:
+        print(f"Using {args.num_workers} DataLoader workers (requested {requested_workers}).")
+
+    if platform.system().lower() == "windows" and args.multiprocessing_context != "spawn":
+        print("Forcing multiprocessing_context=spawn on Windows.")
+        args.multiprocessing_context = "spawn"
 
     if args.compile:
         print("--compile is currently disabled in this project for stability.")
@@ -201,6 +237,7 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         multiprocessing_context=args.multiprocessing_context,
         balanced_sampling=args.balanced_sampling,
+        ela_cache_size=args.ela_cache_size,
     )
 
     print(
@@ -218,34 +255,16 @@ def main() -> None:
         model = nn.DataParallel(model)
         print(f"Using DataParallel across {torch.cuda.device_count()} GPUs")
 
-    class_weights = compute_class_weights(train_loader, device) if args.class_weighted_loss else None
-    if class_weights is not None:
-        print(f"Using class-weighted loss weights={class_weights.detach().cpu().tolist()}")
-
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights,
-        label_smoothing=max(0.0, float(args.label_smoothing)),
-    )
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=1)
-
+    model_ref = _unwrap_model(model)
     latest_checkpoint = output_dir / "latest_model.pth"
     start_epoch = 1
-
     best_f1 = -1.0
     epochs_without_improvement = 0
     history = []
 
     if args.resume and latest_checkpoint.exists():
-        checkpoint = torch.load(latest_checkpoint, map_location=device)
-        if isinstance(model, nn.DataParallel):
-            model.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint.get("scheduler_state_dict", scheduler.state_dict()))
-        if "scaler_state_dict" in checkpoint and scaler is not None:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        checkpoint = load_checkpoint(str(latest_checkpoint), map_location=device)
+        model_ref.load_state_dict(checkpoint["model_state_dict"])
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         best_f1 = float(checkpoint.get("best_f1", best_f1))
         epochs_without_improvement = int(checkpoint.get("epochs_without_improvement", epochs_without_improvement))
@@ -254,7 +273,47 @@ def main() -> None:
             history.extend(loaded_history)
         print(f"Resumed Layer 1 training from {latest_checkpoint} at epoch {start_epoch}")
 
+    if args.freeze_backbone_epochs > 0:
+        if start_epoch <= args.freeze_backbone_epochs:
+            model_ref.freeze_backbone()
+            print(f"Freezing backbone features for the first {args.freeze_backbone_epochs} epochs.")
+        else:
+            model_ref.unfreeze_backbone()
+
+    class_weights = compute_class_weights(train_loader, device) if args.class_weighted_loss else None
+    if class_weights is not None:
+        print(f"Using class-weighted loss weights={class_weights.detach().cpu().tolist()}")
+
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=max(0.0, float(args.label_smoothing)),
+    )
+    optimizer_kwargs = {
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+    }
+    if cuda_enabled and args.fused_adamw:
+        try:
+            optimizer = AdamW(model.parameters(), fused=True, **optimizer_kwargs)
+            print("Using fused AdamW optimizer.")
+        except TypeError:
+            optimizer = AdamW(model.parameters(), **optimizer_kwargs)
+    else:
+        optimizer = AdamW(model.parameters(), **optimizer_kwargs)
+    scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=1)
+
+    if args.resume and latest_checkpoint.exists():
+        checkpoint = load_checkpoint(str(latest_checkpoint), map_location=device)
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint.get("scheduler_state_dict", scheduler.state_dict()))
+        if "scaler_state_dict" in checkpoint and scaler is not None:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
     for epoch in range(start_epoch, args.epochs + 1):
+        if args.freeze_backbone_epochs > 0 and epoch == args.freeze_backbone_epochs + 1:
+            model_ref.unfreeze_backbone()
+            print("Unfroze backbone for full fine-tuning.")
+
         train_loss, train_metrics = run_epoch(
             model,
             train_loader,
@@ -292,7 +351,7 @@ def main() -> None:
 
         latest_state = {
             "epoch": epoch,
-            "model_state_dict": model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+            "model_state_dict": model_ref.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -314,7 +373,7 @@ def main() -> None:
             save_checkpoint(
                 {
                     "epoch": epoch,
-                    "model_state_dict": model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict(),
+                    "model_state_dict": model_ref.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -331,11 +390,8 @@ def main() -> None:
             print("Early stopping triggered.")
             break
 
-    checkpoint = torch.load(output_dir / "best_model.pth", map_location=device)
-    if isinstance(model, nn.DataParallel):
-        model.module.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint = load_checkpoint(str(output_dir / "best_model.pth"), map_location=device)
+    model_ref.load_state_dict(checkpoint["model_state_dict"])
 
     test_loss, test_metrics = run_epoch(
         model,
@@ -358,4 +414,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
     main()

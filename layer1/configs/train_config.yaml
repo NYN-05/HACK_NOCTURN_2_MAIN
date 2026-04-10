@@ -1,4 +1,4 @@
-dataset_root: dataset
+dataset_root: ../Data
 epochs: 20
 batch_size: 16
 image_size: 224

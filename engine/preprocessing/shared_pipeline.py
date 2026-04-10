@@ -8,6 +8,9 @@ import numpy as np
 from PIL import Image
 
 from layer1.preprocessing.ela import ELAGenerator
+from .image_pipeline import preprocess_all
+
+__all__ = ["preprocess_all"]
 
 RGB_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 RGB_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)

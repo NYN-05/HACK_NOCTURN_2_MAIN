@@ -64,8 +64,16 @@ pnpm-debug.log*
 # ------------------------------
 # Project datasets and generated artifacts
 # ------------------------------
-# Root dataset directory requested to be excluded from git
+# Root dataset directory
 /Data/
+data/
+dataset/
+datasets/
+
+# Dataset folders
+cleaned_data/
+Fine_tuning_data/
+clip_model/
 
 # Trained weights / checkpoints / large outputs
 *.pt
@@ -73,29 +81,44 @@ pnpm-debug.log*
 *.onnx
 *.ckpt
 *.safetensors
-
-# Generic ML outputs
+*.pb
+*.h5
 checkpoints/
 artifacts/
+artifacts_fast_85/
+outputs/
 outputs/
 runs/
 wandb/
 
-# Layer-specific generated folders
+# Layer-specific generated folders and models
 layer1/artifacts/
+layer1/artifacts_fast_85/
+layer1/models/
+layer1/data/
 layer2/models/
+layer2/data/
 layer3/checkpoints/
+layer3/models/
+layer3/data/
+layer4/models/
 layer4/models/yolo_finetune/
+
+# Image files (test/sample images)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
 
 # Temporary files
 *.tmp
 *.temp
 *.bak
+*.swp
+*.swo
 
-*.jpg
-*.jpeg
-*.png 
-*.pth
-*.pt
-*.onnx
+# Archive/extraction
+archive/
+extracted/
 *.bin 

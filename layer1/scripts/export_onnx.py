@@ -45,6 +45,7 @@ def main() -> None:
             output_names=["logits"],
             dynamic_axes=dynamic_axes,
             opset_version=17,
+            dynamo=False,
         )
     print(f"ONNX model exported to: {args.output}")
 

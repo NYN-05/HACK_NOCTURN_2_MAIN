@@ -96,6 +96,8 @@ Includes:
 - ReduceLROnPlateau scheduler.
 - Validation every epoch.
 - Best-checkpoint saving.
+- Cached ELA generation to avoid recomputing the same forensic maps every epoch.
+- Optional backbone warmup freezing for faster early convergence.
 - Early stopping.
 - Training history and test metrics export to JSON.
 
@@ -147,26 +149,30 @@ Output format:
 
 ## Installation
 
-1. Create and activate a Python virtual environment.
-2. Install dependencies:
+1. Use a Python 3.10+ interpreter with CUDA-enabled PyTorch available on the system path.
+2. Install dependencies directly into that interpreter:
 
-   pip install -r requirements.txt
+   py -3 -m pip install -r ../requirements.lock.txt
+
+`run_project_current.cmd` uses `py -3` directly and will install missing dependencies into the same system Python installation.
 
 ## Training Instructions
 
 Example training command:
 
 python -m training.train \
-  --dataset-root dataset \
+   --dataset-root ../Data \
   --output-dir artifacts \
   --epochs 30 \
   --batch-size 16 \
   --image-size 224
 
+The Layer 1 batch script now resumes automatically from `artifacts/latest_model.pth` when it exists, which avoids restarting long runs from scratch. On CPU-only machines, `run_project_current.cmd all` skips training and full evaluation, then reuses `artifacts/best_model.pth` or `artifacts/latest_model.pth` for export, inference, and Grad-CAM, selecting a bundled sample image from `Data/real` or `Data/CASIA2/Au` when none is supplied.
+
 ## Evaluation Instructions
 
 python -m evaluation.evaluate \
-  --dataset-root dataset \
+   --dataset-root ../Data \
   --checkpoint artifacts/best_model.pth
 
 ## Inference Example

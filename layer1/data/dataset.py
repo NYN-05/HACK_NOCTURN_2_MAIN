@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torchvision.transforms import InterpolationMode, functional as F
 from torchvision import transforms
 
 from engine.data.manifest_utils import LabeledImage as Sample
@@ -31,19 +32,13 @@ class ForensicsDataset(Dataset):
         training: bool = False,
         jpeg_quality: int = 90,
         ela_scale: float = 10.0,
+        ela_cache_size: int = 1024,
     ) -> None:
         self.samples = list(samples)
         self.image_size = image_size
         self.training = training
-        self.ela_generator = ELAGenerator(jpeg_quality=jpeg_quality, ela_scale=ela_scale)
+        self.ela_generator = ELAGenerator(jpeg_quality=jpeg_quality, ela_scale=ela_scale, cache_size=ela_cache_size)
 
-        self.geom_augment = transforms.Compose(
-            [
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.2),
-                transforms.RandomRotation(degrees=8),
-            ]
-        )
         self.photo_augment = transforms.Compose(
             [
                 transforms.ColorJitter(brightness=0.18, contrast=0.18, saturation=0.12, hue=0.04),
@@ -66,19 +61,39 @@ class ForensicsDataset(Dataset):
             std=(0.5, 0.5, 0.5),
         )
 
+    def _apply_shared_geometric_augment(
+        self,
+        rgb_image: Image.Image,
+        ela_image: Image.Image,
+    ) -> Tuple[Image.Image, Image.Image]:
+        if random.random() < 0.5:
+            rgb_image = F.hflip(rgb_image)
+            ela_image = F.hflip(ela_image)
+
+        if random.random() < 0.2:
+            rgb_image = F.vflip(rgb_image)
+            ela_image = F.vflip(ela_image)
+
+        rotation_degrees = random.uniform(-8.0, 8.0)
+        if abs(rotation_degrees) > 1e-6:
+            rgb_image = F.rotate(rgb_image, rotation_degrees, interpolation=InterpolationMode.BILINEAR, fill=0)
+            ela_image = F.rotate(ela_image, rotation_degrees, interpolation=InterpolationMode.BILINEAR, fill=0)
+
+        return rgb_image, ela_image
+
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.samples[idx]
-        image = Image.open(sample.path).convert("RGB")
+        with Image.open(sample.path) as image_file:
+            image = image_file.convert("RGB")
         image = self.base_resize(image)
+        ela = self.ela_generator.generate_from_path(sample.path, size=(self.image_size, self.image_size))
 
         if self.training:
-            image = self.geom_augment(image)
+            image, ela = self._apply_shared_geometric_augment(image, ela)
             image = self.photo_augment(image)
-
-        ela = self.ela_generator.generate(image)
 
         rgb_tensor = self.rgb_normalize(self.to_tensor(image))
         ela_tensor = self.ela_normalize(self.to_tensor(ela))
@@ -174,13 +189,14 @@ def build_dataloaders(
     prefetch_factor: int = 2,
     multiprocessing_context: str = "spawn",
     balanced_sampling: bool = True,
+    ela_cache_size: int = 1024,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     samples = discover_samples(dataset_root)
     train_samples, val_samples, test_samples = stratified_split(samples, seed=seed)
 
-    train_dataset = ForensicsDataset(train_samples, image_size=image_size, training=True)
-    val_dataset = ForensicsDataset(val_samples, image_size=image_size, training=False)
-    test_dataset = ForensicsDataset(test_samples, image_size=image_size, training=False)
+    train_dataset = ForensicsDataset(train_samples, image_size=image_size, training=True, ela_cache_size=ela_cache_size)
+    val_dataset = ForensicsDataset(val_samples, image_size=image_size, training=False, ela_cache_size=ela_cache_size)
+    test_dataset = ForensicsDataset(test_samples, image_size=image_size, training=False, ela_cache_size=ela_cache_size)
 
     loader_kwargs = {
         "num_workers": num_workers,

@@ -22,6 +22,14 @@ class EfficientNetForensics(nn.Module):
             nn.Linear(in_features, 2),
         )
 
+    def freeze_backbone(self) -> None:
+        for parameter in self.backbone.features.parameters():
+            parameter.requires_grad = False
+
+    def unfreeze_backbone(self) -> None:
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad = True
+
     def _adapt_first_conv(self) -> None:
         conv_stem = self.backbone.features[0][0]
         if conv_stem.in_channels == 6:

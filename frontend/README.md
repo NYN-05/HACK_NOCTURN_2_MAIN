@@ -1,39 +1,15 @@
-# VeriSight Frontend (React + Vite)
+# VeriSight Frontend
 
-This frontend allows you to upload an image and optional metadata, then call the backend verification API that powers `generate_final_score.py`.
+React + Vite frontend for an AI image verification platform.
 
-## What It Connects To
-
-- Backend endpoint: `/api/v1/verify`
-- Backend implementation: `engine/pipeline/api_router.py`
-- Orchestrator used: `engine/pipeline/orchestrator.py` (same flow used by `generate_final_score.py`)
-
-## Local Setup
-
-1. Start backend API from project root:
-
-	```bash
-	uvicorn engine.pipeline.app:app --reload --host 127.0.0.1 --port 8000
-	```
-
-2. Start frontend:
-
-	```bash
-	cd frontend
-	npm install
-	npm run dev
-	```
-
-3. Open the URL shown by Vite (normally `http://localhost:5173`).
-
-## API Base URL (Optional)
-
-By default, the frontend uses relative `/api/v1/verify`, and Vite proxies `/api` to `http://127.0.0.1:8000` in development.
-
-To point at another backend, create `.env` in `frontend`:
+## Run
 
 ```bash
-VITE_API_BASE_URL=http://your-host:your-port
+npm install
+npm run dev
 ```
 
-Then restart the frontend dev server.
+## Environment
+
+- `VITE_VERIFY_API_URL` - base API URL for verification requests.
+- `VITE_USE_MOCK_API=true` - force local fallback results.

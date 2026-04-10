@@ -12,8 +12,11 @@ def save_checkpoint(state: Dict[str, Any], output_path: str) -> None:
     torch.save(state, path)
 
 
-def load_checkpoint(path: str, map_location: str = "cpu") -> Dict[str, Any]:
-    checkpoint = torch.load(path, map_location=map_location)
+def load_checkpoint(path: str, map_location: str = "cpu", weights_only: bool = True) -> Dict[str, Any]:
+    try:
+        checkpoint = torch.load(path, map_location=map_location, weights_only=weights_only)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=map_location)
     if not isinstance(checkpoint, dict):
         raise ValueError("Checkpoint format is invalid. Expected dictionary.")
     return checkpoint

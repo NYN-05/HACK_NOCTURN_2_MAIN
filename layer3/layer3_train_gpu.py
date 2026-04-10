@@ -3,6 +3,7 @@ import io
 import json
 import os
 import random
+import platform
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
+from PIL import ImageFilter
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -26,6 +28,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
+import torch.multiprocessing as mp
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -59,6 +62,15 @@ def _default_dataset_root() -> str:
     return str(repo_root / "DATA")
 
 
+def _resolve_num_workers(requested_workers: int) -> int:
+    requested_workers = max(0, requested_workers)
+    if platform.system().lower() != "windows":
+        return requested_workers
+    if requested_workers == 0:
+        requested_workers = 2
+    return min(max(requested_workers, 2), 4)
+
+
 class RandomJPEGCompressionTensor:
     def __init__(self, quality_min: int = 60, quality_max: int = 95, p: float = 0.5):
         self.quality_min = quality_min
@@ -74,8 +86,8 @@ class RandomJPEGCompressionTensor:
         buf = io.BytesIO()
         pil.save(buf, format="JPEG", quality=quality)
         buf.seek(0)
-        jpeg_img = Image.open(buf).convert("RGB")
-        return transforms.ToTensor()(jpeg_img)
+        with Image.open(buf) as jpeg_img:
+            return transforms.ToTensor()(jpeg_img.convert("RGB"))
 
 
 class FocalLoss(nn.Module):
@@ -102,7 +114,8 @@ class GanBinaryDataset(Dataset):
 
     def __getitem__(self, idx: int):
         path, label = self.samples[idx]
-        img = Image.open(path).convert("RGB")
+        with Image.open(path) as image_file:
+            img = image_file.convert("RGB")
         if self.transform is not None:
             img = self.transform(img)
         return img, torch.tensor([float(label)], dtype=torch.float32)
@@ -116,8 +129,8 @@ class TrainConfig:
     latest_ckpt_path: str = "checkpoints/layer3_latest.pth"
     centroid_path: str = "checkpoints/clip_real_centroid.pt"
     epochs: int = 25
-    batch_size: int = 4
-    small_vram_batch_size: int = 2
+    batch_size: int = 8
+    small_vram_batch_size: int = 4
     validation_split: float = 0.15
     test_split: float = 0.15
     lr: float = 3e-4
@@ -139,6 +152,7 @@ class TrainConfig:
     max_real_for_calibration: int = 300
     seed: int = 42
     metrics_out_path: str = "checkpoints/layer3_training_metrics.json"
+    use_all_data: bool = True
 
 
 def set_seed(seed: int) -> None:
@@ -181,9 +195,6 @@ def _discover_real_fake_paths(dataset_root: str) -> Tuple[List[Path], List[Path]
     fake_paths: List[Path] = []
 
     excluded_names = {
-        "train",
-        "val",
-        "test",
         "prepared_yolo",
         "labels",
     }
@@ -201,6 +212,103 @@ def _discover_real_fake_paths(dataset_root: str) -> Tuple[List[Path], List[Path]
             fake_paths.append(path)
 
     return sorted(set(real_paths)), sorted(set(fake_paths))
+
+
+class JpegCompressionTransform:
+    """PIL-based JPEG-quality augmentation (keeps PIL pipeline)."""
+    def __init__(self, quality_range=(60, 95), p: float = 0.5):
+        self.quality_range = quality_range
+        self.p = p
+
+    def __call__(self, img_pil: Image.Image) -> Image.Image:
+        if random.random() > self.p:
+            return img_pil
+        quality = random.randint(self.quality_range[0], self.quality_range[1])
+        buf = io.BytesIO()
+        img_pil.save(buf, format="JPEG", quality=quality)
+        buf.seek(0)
+        with Image.open(buf) as out:
+            return out.convert("RGB")
+
+
+def _make_real_synthetic(seed: int):
+    rng = np.random.default_rng(seed)
+    h, w = 256, 256
+    ii = np.arange(h).reshape(h, 1)
+    jj = np.arange(w).reshape(1, w)
+    noise_r = rng.normal(0, 12, (h, w))
+    noise_g = rng.normal(0, 12, (h, w))
+    noise_b = rng.normal(0, 12, (h, w))
+
+    r = 128 + 80 * np.sin(ii / 30.0) + noise_r
+    g = 128 + 60 * np.cos(jj / 25.0) + noise_g
+    b = 100 + 50 * np.sin((ii + jj) / 40.0) + noise_b
+    arr = np.stack([r, g, b], axis=-1)
+    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    img = Image.fromarray(arr, mode="RGB")
+    return img
+
+
+def _make_fake_from_real(real_img_pil, seed):
+    rng = np.random.default_rng(seed)
+    arr = np.array(real_img_pil).astype(np.float64)
+    h, w, _ = arr.shape
+
+    y0 = int(rng.integers(0, max(1, h - 96)))
+    x0 = int(rng.integers(0, max(1, w - 96)))
+    region = arr[y0 : y0 + 96, x0 : x0 + 96, :]
+    yy = np.arange(96).reshape(96, 1)
+    xx = np.arange(96).reshape(1, 96)
+    checker = (((yy // 8 + xx // 8) % 2) * 2 - 1) * 30
+    region += checker[:, :, None]
+
+    y1 = int(rng.integers(0, max(1, h - 80)))
+    x1 = int(rng.integers(0, max(1, w - 80)))
+    reg2 = arr[y1 : y1 + 80, x1 : x1 + 80, :]
+    reg2[:, :, 1] = reg2[:, :, 0] * 0.985
+    reg2[:, :, 2] = reg2[:, :, 0] * 0.972
+
+    periodic = 8 * np.sin(np.arange(h).reshape(h, 1) / 6.0)
+    arr += periodic[:, :, None]
+
+    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    img = Image.fromarray(arr, mode="RGB")
+
+    y_min = max(0, min(y0, y1))
+    x_min = max(0, min(x0, x1))
+    y_max = min(h, max(y0 + 96, y1 + 80))
+    x_max = min(w, max(x0 + 96, x1 + 80))
+    crop = img.crop((x_min, y_min, x_max, y_max)).filter(ImageFilter.GaussianBlur(radius=0.6))
+    img.paste(crop, (x_min, y_min))
+    return img
+
+
+def _save_jpg(img_pil, out_path, quality=85):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img_pil.save(out_path, format="JPEG", quality=quality)
+
+
+def _build_synthetic_fallback(dataset_dir, n_per_class=64):
+    root = Path(dataset_dir)
+    real_dir = root / "real"
+    fake_dir = root / "gan_fake"
+    real_dir.mkdir(parents=True, exist_ok=True)
+    fake_dir.mkdir(parents=True, exist_ok=True)
+
+    total = n_per_class * 2
+    pbar = tqdm(total=total, desc="Synthetic dataset", leave=False)
+    for idx in range(n_per_class):
+        real_img = _make_real_synthetic(seed=idx)
+        out_real = real_dir / f"synthetic_real_{idx:05d}.jpg"
+        _save_jpg(real_img, out_real, quality=90)
+        pbar.update(1)
+
+        fake_img = _make_fake_from_real(real_img, seed=idx + 1000)
+        out_fake = fake_dir / f"synthetic_fake_{idx:05d}.jpg"
+        _save_jpg(fake_img, out_fake, quality=90)
+        pbar.update(1)
+    pbar.close()
 
 
 def build_samples(dataset_root: str) -> List[Tuple[str, int]]:
@@ -329,9 +437,14 @@ def tune_decision_threshold(labels_np: np.ndarray, probs_np: np.ndarray) -> floa
 
 def build_dataloaders(cfg: TrainConfig):
     all_samples = build_samples(cfg.dataset_root)
-    train_samples, val_samples, test_samples = split_dataset(
-        all_samples, cfg.validation_split, cfg.test_split, cfg.seed
-    )
+    if cfg.use_all_data:
+        train_samples = all_samples
+        val_samples = all_samples
+        test_samples = all_samples
+    else:
+        train_samples, val_samples, test_samples = split_dataset(
+            all_samples, cfg.validation_split, cfg.test_split, cfg.seed
+        )
 
     train_transform, eval_transform = make_transforms(cfg)
 
@@ -340,12 +453,17 @@ def build_dataloaders(cfg: TrainConfig):
     test_ds = GanBinaryDataset(test_samples, transform=eval_transform)
     train_sampler = _build_balanced_sampler(train_samples)
 
+    num_workers = _resolve_num_workers(cfg.num_workers)
+
     loader_kwargs = {
-        "num_workers": cfg.num_workers,
+        "num_workers": num_workers,
         "pin_memory": cfg.pin_memory,
-        "persistent_workers": cfg.persistent_workers,
-        "prefetch_factor": cfg.prefetch_factor,
+        "persistent_workers": cfg.persistent_workers and num_workers > 0,
     }
+
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = cfg.prefetch_factor
+        loader_kwargs["multiprocessing_context"] = "spawn"
 
     train_loader = DataLoader(
         train_ds,
@@ -470,7 +588,8 @@ def calibrate_real_centroid(
     encoder.eval()
     with torch.no_grad():
         for p in tqdm(selected_real_paths, desc="Calibrating real centroid", leave=False):
-            img = Image.open(p).convert("RGB")
+            with Image.open(p) as image_file:
+                img = image_file.convert("RGB")
             x = eval_transform(img).unsqueeze(0).to(device, non_blocking=True)
             emb = _encode_images(encoder, x)
             embs.append(emb.cpu())
@@ -481,7 +600,13 @@ def calibrate_real_centroid(
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--use-all-data", action="store_true", help="Use all images as training data (no val/test splitting)")
+    args = parser.parse_args()
+
     cfg = TrainConfig()
+    if args.use_all_data:
+        cfg.use_all_data = True
     set_seed(cfg.seed)
 
     os.makedirs(cfg.checkpoints_dir, exist_ok=True)
@@ -495,16 +620,26 @@ def main():
     gpu_name = torch.cuda.get_device_name(0)
     vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
 
-    if vram_gb < 6.0:
+    if vram_gb < 8.0:
         cfg.batch_size = cfg.small_vram_batch_size
+    elif vram_gb < 12.0:
+        cfg.batch_size = max(cfg.batch_size, 8)
+    else:
+        cfg.batch_size = max(cfg.batch_size, 16)
 
     if cfg.batch_size > 64:
         cfg.batch_size = 64
+
+    requested_workers = cfg.num_workers
+    cfg.num_workers = _resolve_num_workers(cfg.num_workers)
+    if cfg.num_workers != requested_workers:
+        print(f"INFO | Using {cfg.num_workers} DataLoader workers (requested {requested_workers})")
 
     print(f"INFO | GPU: {gpu_name} | VRAM: {vram_gb:.1f} GB")
     print(f"INFO | batch_size={cfg.batch_size}")
 
     torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
     torch.cuda.empty_cache()
 
     train_loader, val_loader, test_loader, train_samples, val_samples, test_samples = build_dataloaders(cfg)
@@ -665,7 +800,7 @@ def main():
             "no_improve": no_improve,
             "history": history,
         }
-        torch.save(latest_state, cfg.latest_ckpt_path, pickle_protocol=2)
+        torch.save(latest_state, cfg.latest_ckpt_path)
 
         improved = (val_auc - best_auc) > cfg.early_stopping_min_delta
         if improved:
@@ -685,7 +820,7 @@ def main():
                 "epoch": best_epoch,
                 "config": asdict(cfg),
             }
-            torch.save(ckpt, cfg.best_ckpt_path, pickle_protocol=2)
+            torch.save(ckpt, cfg.best_ckpt_path)
             print(
                 f"INFO | Checkpoint saved -> {cfg.best_ckpt_path} | val_loss={best_val_loss:.4f} | val_auc={best_auc:.4f} | thr={best_threshold:.3f}"
             )
@@ -719,7 +854,7 @@ def main():
         device=device,
         max_images=cfg.max_real_for_calibration,
     )
-    torch.save(centroid, cfg.centroid_path, pickle_protocol=2)
+    torch.save(centroid, cfg.centroid_path)
     print(
         f"CLIP centroid calibrated on {n_real} real images. Saved to {cfg.centroid_path}"
     )
@@ -778,4 +913,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()

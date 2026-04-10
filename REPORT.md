@@ -1,6 +1,6 @@
 # VeriSight Project Report
 
-Generated from a deep scan of the current workspace on 2026-04-03.
+Generated from a deep scan of the current workspace on 2026-04-04.
 
 This report covers the repository as it exists now: architecture, runtime flow, directory structure, source file responsibilities, generated artifacts, datasets, tests, and the main launcher scripts. Source files are linked relative to the repo root. Data, weights, logs, and sample images are summarized as artifacts rather than analyzed one-by-one.
 
@@ -10,7 +10,7 @@ VeriSight is a multi-layer image authenticity verification system for refund-fra
 
 - Layer 1: CNN forensics with RGB + ELA fusion
 - Layer 2: ViT-based AI-generated image detection
-- Layer 3: GAN artifact detection and CLIP-based fingerprinting
+- Layer 3: GAN artifact detection and CLIP-based fingerprinting, including a Windows-safe RTX 4060 smoke trainer that now runs end to end in the current environment
 - Layer 4: OCR and expiry-date plausibility analysis
 
 The current runtime path is:
@@ -79,7 +79,7 @@ The real code is more conservative than the design documents in `Documentation/`
 
 - Layer 1 trains and evaluates a 6-channel EfficientNet-B4 model with ELA preprocessing, then exports ONNX and Grad-CAM artifacts.
 - Layer 2 prepares a processed real/fake split dataset, fine-tunes a HuggingFace ViT model, then exports a Torch checkpoint and ONNX graph.
-- Layer 3 builds a real/gan_fake dataset from public or synthetic sources, trains a CLIP-RN50 head, calibrates a real-image centroid, and saves checkpoint/metric files.
+- Layer 3 builds a real/gan_fake dataset from public or synthetic sources, trains a CLIP-RN50 head, calibrates a real-image centroid, and now includes a smoke-validated RTX 4060 trainer with Windows-safe multiprocessing, checkpoint compatibility, and compile fallbacks.
 - Layer 4 prepares YOLO training data from manifests or CASIA/MICC fallback layouts, fine-tunes a detector, and feeds the resulting weights into OCR verification.
 - The evaluation scripts in `evaluation/` run the orchestrator on dataset splits and emit benchmark, latency, history, and threshold-calibration JSON.
 
@@ -241,12 +241,12 @@ Layer 3 is the GAN artifact detector and CLIP-based fingerprinting stack.
 - [layer3/dataset/augment.py](layer3/dataset/augment.py) is a simple offline image augmenter that rotates, brightens, blurs, and recompresses images into a target directory.
 - [layer3/dataset_config.py](layer3/dataset_config.py) declares dataset presets for GenImage++ and custom product datasets, including label maps and sample caps.
 - [layer3/layer3_dataset_builder.py](layer3/layer3_dataset_builder.py) builds `dataset/real` and `dataset/gan_fake` from HuggingFace GenImage++ or synthetic fallback generation, and adds secondary augmentations such as seam blends and checkerboard artifacts.
-- [layer3/train_gan.py](layer3/train_gan.py) is the main Layer 3 trainer. It discovers real/fake images, loads a frozen CLIP-RN50 encoder, trains a binary MLP head with focal loss, saves per-epoch and best checkpoints, and calibrates a real-image centroid.
-- [layer3/layer3_train_gpu.py](layer3/layer3_train_gpu.py) is an alternate, more feature-rich training pipeline. It performs train/val/test splitting, threshold tuning, checkpointing, centroid calibration, and final metrics export.
+- [layer3/train_gan.py](layer3/train_gan.py) is the main Layer 3 trainer. It discovers real/fake images, loads a frozen CLIP-RN50 encoder, trains a binary MLP head with focal loss, saves per-epoch and best checkpoints, and calibrates a real-image centroid. The current version is tuned for Windows spawn multiprocessing and higher-throughput loader settings.
+- [layer3/layer3_train_gpu.py](layer3/layer3_train_gpu.py) is an alternate, more feature-rich training pipeline. It performs train/val/test splitting, threshold tuning, checkpointing, centroid calibration, and final metrics export, with Windows-safe worker normalization and adaptive batch sizing.
 - [layer3/layer3_trained_inference.py](layer3/layer3_trained_inference.py) loads the trained detector and centroid when available, runs synthetic smoke images, and prints per-score diagnostics.
 - [layer3/test_gan.py](layer3/test_gan.py) is the Layer 3 smoke-test suite. It checks CUDA availability, CLIP importability, focal loss, head shape, dataset readiness, dataloader behavior, checkpoint/centroid presence, and detector integration.
 - [layer3/layer3_gan/verisight_layer3_gan.py](layer3/layer3_gan/verisight_layer3_gan.py) defines `Layer3Config`, `SubScores`, `Layer3Result`, the CLIP-backed detector, and the heuristic GAN detector that fuses spectrum, CLIP, channel, boundary, texture, and resynthesis scores.
-- [layer3/layer3_gan/layer3_train_rtx4060.py](layer3/layer3_gan/layer3_train_rtx4060.py) is an alternate RTX 4060-optimized trainer with its own dataset builder, train/val/test flow, threshold tuning, calibration, and metrics export.
+- [layer3/layer3_gan/layer3_train_rtx4060.py](layer3/layer3_gan/layer3_train_rtx4060.py) is an alternate RTX 4060-optimized trainer with its own dataset builder, train/val/test flow, threshold tuning, calibration, and metrics export. It now uses a smoke-aware dataset cap, skips `torch.compile` when Triton is unavailable, and accepts both legacy and current checkpoint metadata.
 - [layer3/layer3_gan/__init__.py](layer3/layer3_gan/__init__.py) is a package marker.
 - Temporary helper scripts: [layer3/.tmp_cifake_download.py](layer3/.tmp_cifake_download.py) downloads or synthesizes a CIFAKE-like dataset, and [layer3/.tmp_make_fallback_dataset.py](layer3/.tmp_make_fallback_dataset.py) generates a small fallback real/GAN training set. These are utility scripts rather than core source.
 - Generated/test assets: [layer3/test_gan.jpg](layer3/test_gan.jpg), [layer3/test_genuine.jpg](layer3/test_genuine.jpg), [layer3/push_attempt.log](layer3/push_attempt.log).
@@ -406,15 +406,215 @@ The `TEST_IMAGE/` folder contains two sample JPEG inputs used for local smoke te
 
 - `pytest tests/` passed with 5 tests.
 - `evaluation/evaluate_system.py --limit 1` completed successfully on a smoke sample and reported roughly 476 ms latency.
+- `python -m compileall layer3\layer3_gan\layer3_train_rtx4060.py layer3\train_gan.py layer3\layer3_train_gpu.py layer2\training\train_vit.py layer1\training\train.py layer1\evaluation\evaluate.py` completed successfully.
+- `python layer3\layer3_gan\layer3_train_rtx4060.py --smoke` completed successfully on the current Windows GPU setup after clearing stale artifacts, disabling `torch.compile` without Triton, and rebuilding the Layer 3 smoke dataset.
 
 ## 8. Notable Observations
 
 1. The implementation is intentionally narrower than the conceptual documents. The code now centers on an async, in-memory central orchestrator with shared preprocessing, request caching, early exit, and meta-model fusion, but it still stops short of the blueprint's richer Celery/JWT/PostgreSQL/XAI stack.
 2. Several docs are aspirational or partially stale. The clearest example is `frontend/README.md`, which references a non-existent `generate_final_score.py` file.
-3. The repo contains a nested `.git/` directory under `layer4/`, which suggests a nested snapshot or imported sub-repository.
-4. `layer4/orchestration/*.py` are empty placeholders, while the actual Layer 4 adapter logic lives in `layer4/orchestrator.py` and `engine/interfaces/ocr_interface.py`.
-5. The current layout is consistent about separating source code, checkpoints, benchmark scripts, and large data directories.
+3. The current Windows Layer 3 smoke path is validated, but its synthetic integration image scores are not a substitute for real held-out performance.
+4. The repo contains a nested `.git/` directory under `layer4/`, which suggests a nested snapshot or imported sub-repository.
+5. `layer4/orchestration/*.py` are empty placeholders, while the actual Layer 4 adapter logic lives in `layer4/orchestrator.py` and `engine/interfaces/ocr_interface.py`.
+6. The current layout is consistent about separating source code, checkpoints, benchmark scripts, and large data directories.
 
 ## 9. Bottom Line
 
-The project is a well-factored multi-layer image verification system with a real central orchestrator, layered model wrappers, dedicated training scripts for each model family, and a separate React frontend. The current runtime is async, in-memory, cache-aware, and uses shared preprocessing, early exit, and meta-model fusion. The strongest parts of the codebase are the centralized runtime flow, the separation of scoring from decisioning, and the per-layer tooling for training, inference, and evaluation. The biggest gaps are doc/code drift and a few empty placeholder modules, not the core runtime path.
+The project is a well-factored multi-layer image verification system with a real central orchestrator, layered model wrappers, dedicated training scripts for each model family, and a separate React frontend. The current runtime is async, in-memory, cache-aware, and uses shared preprocessing, early exit, and meta-model fusion. The strongest parts of the codebase are the centralized runtime flow, the separation of scoring from decisioning, and the per-layer tooling for training, inference, and evaluation. The Layer 3 Windows smoke path now runs end to end on the current machine, so the biggest gaps are doc/code drift and a few empty placeholder modules, not the core runtime path.
+
+## 10. Current Project Directory File Map
+
+### 10.1 Root Files
+
+- [README.md](README.md) is the main project overview and launch guide.
+- [REPORT.md](REPORT.md) is this workspace snapshot.
+- [requirements.lock.txt](requirements.lock.txt) is the pinned dependency set for the shared runtime path.
+- [.gitignore](.gitignore) contains the repository ignore rules for caches, datasets, and generated artifacts.
+
+### 10.2 Root Directories
+
+- [.github/](.github/) contains CI workflows, including the performance regression check.
+- [Documentation/](Documentation/) contains architecture notes, implementation blueprints, and planning documents.
+- [configs/](configs/) contains shared thresholds, weights, and timeout constants.
+- [engine/](engine/) contains the async verification pipeline, interface adapters, preprocessing, scoring, and decisioning.
+- [evaluation/](evaluation/) contains benchmark, calibration, latency, and regression scripts.
+- [frontend/](frontend/) contains the React/Vite upload UI and styling.
+- [layer1/](layer1/) contains the CNN forensics training, inference, preprocessing, export, and evaluation tooling.
+- [layer2/](layer2/) contains the ViT detector training, dataset prep, API, and ONNX inference tooling.
+- [layer3/](layer3/) contains the GAN artifact detection, CLIP fingerprinting, smoke tests, and training artifacts.
+- [layer4/](layer4/) contains the OCR verification, YOLO fine-tuning, and OCR API tooling.
+- [tests/](tests/) contains the orchestrator and scoring contract tests.
+- [Data/](Data/) contains the raw and prepared datasets used by the layer pipelines.
+- [checkpoints/](checkpoints/) contains the Layer 3 checkpoints, centroid, and training metrics.
+- [artifacts/](artifacts/) is the top-level artifact staging area.
+- [TEST_IMAGE/](TEST_IMAGE/) contains sample images for local smoke testing.
+- [tools/](tools/) is the helper script and utility area.
+- [.venv/](.venv/) is the local Python virtual environment and is not part of the source tree.
+
+### 10.3 engine File Map
+
+#### Engine Core
+
+- [engine/__init__.py](engine/__init__.py) re-exports the primary engine package symbols.
+- [engine/decision_engine.py](engine/decision_engine.py) maps the final score to a platform action.
+- [engine/meta_model.py](engine/meta_model.py) loads and applies the JSON-backed stacking model.
+- [engine/meta_model.json](engine/meta_model.json) stores the default stacking coefficients and intercept.
+- [engine/scoring_engine.py](engine/scoring_engine.py) fuses layer scores and handles the calibrated fallback path.
+
+#### Engine Pipeline
+
+- [engine/pipeline/__init__.py](engine/pipeline/__init__.py) re-exports the orchestrator package.
+- [engine/pipeline/app.py](engine/pipeline/app.py) creates the FastAPI app and preloads models at startup.
+- [engine/pipeline/api_router.py](engine/pipeline/api_router.py) implements the verify endpoint, request cache, and in-memory decode path.
+- [engine/pipeline/orchestrator.py](engine/pipeline/orchestrator.py) coordinates the parallel layer execution, early exit, and telemetry.
+
+#### Engine Interfaces
+
+- [engine/interfaces/__init__.py](engine/interfaces/__init__.py) re-exports the four layer adapters.
+- [engine/interfaces/common.py](engine/interfaces/common.py) provides shared loading and conversion helpers for layer adapters.
+- [engine/interfaces/cnn_interface.py](engine/interfaces/cnn_interface.py) wraps Layer 1 inference.
+- [engine/interfaces/vit_interface.py](engine/interfaces/vit_interface.py) wraps Layer 2 inference.
+- [engine/interfaces/gan_interface.py](engine/interfaces/gan_interface.py) wraps Layer 3 inference.
+- [engine/interfaces/ocr_interface.py](engine/interfaces/ocr_interface.py) wraps Layer 4 inference.
+
+#### Engine Data and Preprocessing
+
+- [engine/data/__init__.py](engine/data/__init__.py) re-exports the dataset utility helpers.
+- [engine/data/manifest_utils.py](engine/data/manifest_utils.py) discovers labeled samples from manifests or folder conventions.
+- [engine/data/hard_negative_mining.py](engine/data/hard_negative_mining.py) extracts borderline samples for follow-up training.
+- [engine/data/split_hygiene.py](engine/data/split_hygiene.py) checks for leakage across dataset splits.
+- [engine/preprocessing/__init__.py](engine/preprocessing/__init__.py) exports the shared preprocessing entrypoint.
+- [engine/preprocessing/shared_pipeline.py](engine/preprocessing/shared_pipeline.py) builds the shared image bundle used by the orchestrator and adapters.
+
+### 10.4 layer1 File Map
+
+#### Layer 1 Configuration and Launchers
+
+- [layer1/README.md](layer1/README.md) documents the CNN forensic workflow, dataset assumptions, and launch commands.
+- [layer1/requirements.txt](layer1/requirements.txt) pins the Layer 1 training and export dependencies.
+- [layer1/run_project.cmd](layer1/run_project.cmd) is the Windows end-to-end launcher for Layer 1 training, evaluation, export, and inference.
+- [layer1/configs/train_config.yaml](layer1/configs/train_config.yaml) stores the default training hyperparameters.
+
+#### Layer 1 Model and Preprocessing
+
+- [layer1/models/__init__.py](layer1/models/__init__.py) marks the model package.
+- [layer1/models/efficientnet_forensics.py](layer1/models/efficientnet_forensics.py) defines the six-channel EfficientNet forensic model.
+- [layer1/preprocessing/__init__.py](layer1/preprocessing/__init__.py) marks the preprocessing package.
+- [layer1/preprocessing/ela.py](layer1/preprocessing/ela.py) generates Error Level Analysis images for forgery detection.
+
+#### Layer 1 Data and Training
+
+- [layer1/data/__init__.py](layer1/data/__init__.py) marks the dataset package.
+- [layer1/data/dataset.py](layer1/data/dataset.py) discovers the image splits, applies augmentations, and builds the train/val/test loaders.
+- [layer1/training/__init__.py](layer1/training/__init__.py) marks the training package.
+- [layer1/training/__main__.py](layer1/training/__main__.py) delegates to the main Layer 1 training entrypoint.
+- [layer1/training/train.py](layer1/training/train.py) is the primary training loop with balanced sampling, checkpointing, and evaluation.
+
+#### Layer 1 Evaluation and Scripts
+
+- [layer1/evaluation/__init__.py](layer1/evaluation/__init__.py) marks the evaluation package.
+- [layer1/evaluation/metrics.py](layer1/evaluation/metrics.py) computes the core classification metrics.
+- [layer1/evaluation/evaluate.py](layer1/evaluation/evaluate.py) runs checkpoint evaluation on the test split.
+- [layer1/evaluation/gradcam.py](layer1/evaluation/gradcam.py) builds Grad-CAM overlays for forensic inspection.
+- [layer1/scripts/__init__.py](layer1/scripts/__init__.py) marks the scripts package.
+- [layer1/scripts/export_onnx.py](layer1/scripts/export_onnx.py) exports the trained model to ONNX.
+- [layer1/scripts/gradcam_demo.py](layer1/scripts/gradcam_demo.py) runs a Grad-CAM demo and writes an overlay image.
+
+#### Layer 1 Utilities
+
+- [layer1/utils/__init__.py](layer1/utils/__init__.py) marks the utility package.
+- [layer1/utils/checkpointing.py](layer1/utils/checkpointing.py) saves and loads Layer 1 checkpoint dictionaries.
+- [layer1/utils/device.py](layer1/utils/device.py) resolves the runtime device and CUDA fallback behavior.
+- [layer1/utils/reproducibility.py](layer1/utils/reproducibility.py) seeds Python, NumPy, and Torch for deterministic runs.
+- [layer1/utils/warnings_control.py](layer1/utils/warnings_control.py) suppresses non-actionable warnings during training and inference.
+
+### 10.5 layer2 File Map
+
+#### Layer 2 Packaging and Runtime
+
+- [layer2/README.md](layer2/README.md) explains the ViT detector workflow, accepted dataset layouts, and API usage.
+- [layer2/requirements.txt](layer2/requirements.txt) pins the Layer 2 training and inference stack.
+- [layer2/Dockerfile](layer2/Dockerfile) builds the standalone Layer 2 API container.
+- [layer2/run_layer2.cmd](layer2/run_layer2.cmd) is the Windows launcher for dataset prep, training, export, and API startup.
+
+#### Layer 2 API and Inference
+
+- [layer2/api/main.py](layer2/api/main.py) creates the FastAPI application and registers the router.
+- [layer2/api/router.py](layer2/api/router.py) exposes the transformer-detection endpoint and returns the score payload.
+- [layer2/inference/preprocessing.py](layer2/inference/preprocessing.py) adapts the shared preprocessing bundle for the standalone detector.
+- [layer2/inference/onnx_inference.py](layer2/inference/onnx_inference.py) runs ONNX-based inference and returns the ViT score and label.
+
+#### Layer 2 Training and Utilities
+
+- [layer2/training/dataset_loader.py](layer2/training/dataset_loader.py) prepares the processed dataset layout and loader configuration.
+- [layer2/training/train_vit.py](layer2/training/train_vit.py) fine-tunes the ViT detector, exports ONNX, and writes metrics.
+- [layer2/utils/config.py](layer2/utils/config.py) stores the shared model and label configuration.
+- [layer2/utils/metrics.py](layer2/utils/metrics.py) provides epoch-level accuracy and summary helpers.
+- [layer2/models/.gitkeep](layer2/models/.gitkeep) keeps the models directory in version control even when empty.
+
+### 10.6 layer3 File Map
+
+#### Layer 3 Packaging and Metadata
+
+- [layer3/README.md](layer3/README.md) documents the GAN artifact detection workflow and expected dataset layout.
+- [layer3/requirements.txt](layer3/requirements.txt) pins the Layer 3 training and inference dependencies.
+- [layer3/.env.example](layer3/.env.example) lists the environment variables used by the Layer 3 pipelines.
+- [layer3/.gitattributes](layer3/.gitattributes) enables Git LFS for large image and model artifacts.
+
+#### Layer 3 Dataset and Training
+
+- [layer3/dataset/augment.py](layer3/dataset/augment.py) performs offline image augmentation for dataset expansion.
+- [layer3/dataset_config.py](layer3/dataset_config.py) declares dataset presets, labels, and sample caps.
+- [layer3/layer3_dataset_builder.py](layer3/layer3_dataset_builder.py) builds the real and GAN-fake training sets from public or synthetic sources.
+- [layer3/train_gan.py](layer3/train_gan.py) is the main CLIP-RN50 GAN detector trainer.
+- [layer3/layer3_train_gpu.py](layer3/layer3_train_gpu.py) is the alternate high-feature training pipeline with splitting, threshold tuning, and export.
+- [layer3/layer3_gan/layer3_train_rtx4060.py](layer3/layer3_gan/layer3_train_rtx4060.py) is the RTX 4060-optimized trainer that now passes smoke validation on Windows.
+
+#### Layer 3 Inference, Testing, and Detector Code
+
+- [layer3/layer3_trained_inference.py](layer3/layer3_trained_inference.py) loads the trained detector and runs smoke-image diagnostics.
+- [layer3/test_gan.py](layer3/test_gan.py) exercises the Layer 3 smoke-test suite.
+- [layer3/layer3_gan/__init__.py](layer3/layer3_gan/__init__.py) marks the detector package.
+- [layer3/layer3_gan/verisight_layer3_gan.py](layer3/layer3_gan/verisight_layer3_gan.py) defines the CLIP-backed detector and heuristic score fusion.
+
+#### Layer 3 Helper Scripts and Generated Assets
+
+- [layer3/.tmp_cifake_download.py](layer3/.tmp_cifake_download.py) downloads or synthesizes a CIFAKE-like dataset for quick setup.
+- [layer3/.tmp_make_fallback_dataset.py](layer3/.tmp_make_fallback_dataset.py) builds the small fallback real/GAN dataset used for smoke runs.
+- [layer3/test_gan.jpg](layer3/test_gan.jpg) and [layer3/test_genuine.jpg](layer3/test_genuine.jpg) are synthetic smoke-test inputs.
+- [layer3/push_attempt.log](layer3/push_attempt.log) is a retained run log from the earlier repository push attempt.
+- [layer3/checkpoints/](layer3/checkpoints/) holds the saved Layer 3 model artifacts and is summarized in the artifact section above.
+
+### 10.7 layer4 File Map
+
+#### Layer 4 Packaging and Runtime
+
+- [layer4/README.md](layer4/README.md) documents the OCR microservice, dataset conventions, installation steps, launcher modes, endpoint contract, and fine-tuning workflow.
+- [layer4/PROJECT_REPORT.md](layer4/PROJECT_REPORT.md) is the earlier layer-specific report for the OCR module and its training runs.
+- [layer4/requirements.txt](layer4/requirements.txt) pins FastAPI, Uvicorn, python-multipart, NumPy, OpenCV, EasyOCR, Ultralytics, and PaddleOCR.
+- [layer4/run_project.sh](layer4/run_project.sh) is the bash launcher for install, import checks, API startup, and YOLO fine-tuning.
+- [layer4/orchestrator.py](layer4/orchestrator.py) is the standalone Layer 4 scoring adapter that wraps the OCR interface and maps OCR scores to genuine, review, or manipulated decisions.
+
+#### Layer 4 API and Inference
+
+- [layer4/api/main.py](layer4/api/main.py) creates the FastAPI app, mounts the router, exposes `/health`, and registers a global exception handler.
+- [layer4/api/router.py](layer4/api/router.py) exposes `POST /api/v1/ocr-verify`, validates uploads, stages a temporary file, runs the OCR verifier, and returns score, flags, details, and latency.
+- [layer4/inference/__init__.py](layer4/inference/__init__.py) marks the OCR inference package.
+- [layer4/inference/ocr_preprocess.py](layer4/inference/ocr_preprocess.py) performs grayscale conversion, CLAHE, adaptive thresholding, denoising, and region cropping.
+- [layer4/inference/ocr_verification.py](layer4/inference/ocr_verification.py) is the main OCR verifier with optional YOLO, EasyOCR, and PaddleOCR support, date parsing, plausibility checks, texture forensics, and uncertainty scoring.
+
+#### Layer 4 Orchestration and Scripts
+
+- [layer4/orchestration/__init__.py](layer4/orchestration/__init__.py) marks the orchestration package.
+- [layer4/orchestration/adapters.py](layer4/orchestration/adapters.py), [layer4/orchestration/pipeline.py](layer4/orchestration/pipeline.py), and [layer4/orchestration/scoring.py](layer4/orchestration/scoring.py) are placeholders in the current workspace.
+- [layer4/scripts/fine_tune_yolo.py](layer4/scripts/fine_tune_yolo.py) converts CASIA or manifest-based annotations to YOLO format, prepares splits, and runs Ultralytics training.
+- [layer4/scripts/verify_layer4_variation.py](layer4/scripts/verify_layer4_variation.py) compares direct OCR, standalone Layer 4 scoring, and global-engine scoring across sample images.
+
+#### Layer 4 Data, Models, and Runs
+
+- [layer4/Data/layer4_tiny/](layer4/Data/layer4_tiny/) contains the small sample data root used for layer-specific experiments.
+- [layer4/dataset/CASIA2/](layer4/dataset/CASIA2/) holds the CASIA Au, Tp, and groundtruth branches used by the fallback data discovery path.
+- [layer4/dataset/CASIA2.0_Groundtruth/](layer4/dataset/CASIA2.0_Groundtruth/) contains the mask PNG groundtruth files for CASIA tampered samples.
+- [layer4/models/yolo_finetune/](layer4/models/yolo_finetune/) contains the fine-tuning run directories: `layer4_cpu_smoke`, `layer4_expiry_region`, `layer4_expiry_region_y11s_v1`, `layer4_full_gpu_fast_e10`, and `layer4_full_gpu_fast_e10_retry`.
+- [layer4/yolo11s.pt](layer4/yolo11s.pt), [layer4/yolo26n.pt](layer4/yolo26n.pt), [layer4/yolov8n.pt](layer4/yolov8n.pt), and [layer4/yolov8s.pt](layer4/yolov8s.pt) are the pre-trained YOLO weights stored at the layer root.
+- [layer4/train_full_error.log](layer4/train_full_error.log) and [layer4/train_full_error_retry.log](layer4/train_full_error_retry.log) are retained training logs.

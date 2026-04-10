@@ -1,8 +1,8 @@
 # VeriSight — Complete Professional Technical Blueprint
 ### AI-Powered Visual Verification System for Delivery Platform Fraud Detection
 
-**Team:** return0 | **Hackathon:** Hack-Nocturne '26 | **Domain:** Cybersecurity  
-**Venues:** Hack-Nocturne '26 & AiFi National Level AI Hackathon — REVA University  
+**Team:** return0 | **Hackathon:** FORGE X | **Domain:** Cybersecurity  
+**Venues:** CMRIT  
 **Document Type:** Senior Architect Technical Blueprint | **Version:** 1.0
 
 ---

@@ -1,3 +1,3 @@
-from .orchestrator import VerificationOrchestrator
+from engine.application import VerificationOrchestrator
 
 __all__ = ["VerificationOrchestrator"]

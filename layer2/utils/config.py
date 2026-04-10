@@ -5,14 +5,30 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 def _resolve_data_root() -> Path:
     repo_root = BASE_DIR.parent
+    cleaned_data = repo_root / "cleaned_data"
+    if cleaned_data.exists():
+        return cleaned_data
     for folder_name in ("DATA", "Data", "data"):
         candidate = repo_root / folder_name
         if candidate.exists():
             return candidate
-    return repo_root / "DATA"
+    return cleaned_data
 
 
 DATA_ROOT = _resolve_data_root()
+CLEANED_DATA_ROOT = DATA_ROOT
+
+
+def _resolve_metadata_path() -> Path:
+    return CLEANED_DATA_ROOT / "metadata" / "unified_groundtruth.csv"
+
+
+def _resolve_labeled_images_dir() -> Path:
+    return CLEANED_DATA_ROOT / "images"
+
+
+def _resolve_complete_images_dir() -> Path:
+    return CLEANED_DATA_ROOT / "images_complete"
 
 
 def _resolve_cifake_dir() -> Path:
@@ -33,6 +49,9 @@ def _resolve_imagenet_mini_dir() -> Path:
 # Raw source dataset locations
 CIFAKE_DIR = _resolve_cifake_dir()
 IMAGENET_MINI_DIR = _resolve_imagenet_mini_dir()
+LABELED_IMAGES_DIR = _resolve_labeled_images_dir()
+COMPLETE_IMAGES_DIR = _resolve_complete_images_dir()
+METADATA_PATH = _resolve_metadata_path()
 
 # Final processed dataset root expected by the training pipeline
 PROCESSED_DATASET_DIR = DATA_ROOT

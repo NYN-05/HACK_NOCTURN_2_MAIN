@@ -27,6 +27,15 @@ def _default_dataset_root() -> str:
     return str(repo_root / "DATA")
 
 
+def _resolve_num_workers(requested_workers: int) -> int:
+    requested_workers = max(0, requested_workers)
+    if platform.system().lower() != "windows":
+        return requested_workers
+    if requested_workers == 0:
+        requested_workers = 2
+    return min(max(requested_workers, 2), 4)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate VeriSight Layer 1 model")
     parser.add_argument("--dataset-root", default=_default_dataset_root())
@@ -50,9 +59,14 @@ def main() -> None:
         print("--compile is currently disabled in this project for stability.")
         args.compile = False
 
-    if platform.system().lower() == "windows" and args.num_workers > 0:
-        print("Forcing num_workers=0 on Windows for multiprocessing stability.")
-        args.num_workers = 0
+    requested_workers = args.num_workers
+    args.num_workers = _resolve_num_workers(args.num_workers)
+    if args.num_workers != requested_workers:
+        print(f"Using {args.num_workers} DataLoader workers (requested {requested_workers}).")
+
+    if platform.system().lower() == "windows" and args.multiprocessing_context != "spawn":
+        print("Forcing multiprocessing_context=spawn on Windows.")
+        args.multiprocessing_context = "spawn"
 
     device = resolve_device(args.device)
     cuda_enabled = use_cuda(device)
@@ -119,4 +133,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
     main()

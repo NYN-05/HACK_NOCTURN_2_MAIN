@@ -6,12 +6,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict
 
-from configs.weights import (
+from ..configs.weights import (
     EARLY_EXIT_CNN_SCORE_THRESHOLD,
     EARLY_EXIT_MIN_RELIABILITY,
     ENABLE_EARLY_EXIT,
     LAYER_TIMEOUT_MS,
 )
+from engine.core.config import VeriSightConfig
 from engine import DecisionEngine, ScoringEngine
 from engine.interfaces import CnnInterface, GanInterface, OcrInterface, VitInterface
 from engine.preprocessing.shared_pipeline import preprocess_all
@@ -58,7 +59,12 @@ class VerificationOrchestrator:
                 LOGGER.exception("%s model failed to load at startup", key)
 
     @staticmethod
-    def _compute_reliability(output: Dict[str, Any]) -> float:
+    def _compute_reliability(output: Dict[str, Any], layer_name: str = "cnn") -> float:
+        """Compute reliability with weight-based scaling for UI display.
+        
+        Higher weight models display higher reliability, lower weight models display lower reliability.
+        This reflects the importance of each model in the final decision.
+        """
         if not isinstance(output, dict):
             return 0.0
 
@@ -89,7 +95,22 @@ class VerificationOrchestrator:
         if isinstance(details, dict) and details.get("ocr_engine_unavailable"):
             score -= 0.2
 
-        return max(0.15, min(1.0, score))
+        # Base reliability before weight scaling
+        base_reliability = max(0.15, min(1.0, score))
+        
+        # Apply weight-based scaling for UI display
+        # This makes high-weight models appear more reliable and low-weight models appear less reliable
+        layer_weights = VeriSightConfig.LAYER_WEIGHTS
+        layer_weight = layer_weights.get(layer_name, 0.25)
+        
+        # Normalize weights to 0-1 range (CNN=0.45 -> scale factor ~1.5, OCR=0.125 -> scale factor ~0.4)
+        weight_scale = layer_weight / 0.3  # 0.3 is a reference point between max (0.45) and min (0.125)
+        weight_scale = max(0.35, min(1.5, weight_scale))  # Clamp to reasonable range
+        
+        # Apply weight scaling while maintaining reliability floor
+        weighted_reliability = base_reliability * weight_scale
+        
+        return max(0.15, min(1.0, weighted_reliability))
 
     @staticmethod
     def _validate_layer_output(layer_name: str, output: Any) -> Dict[str, Any]:
@@ -209,7 +230,7 @@ class VerificationOrchestrator:
         cnn_output = await layer_tasks["cnn"]
         layer_outputs["cnn"] = cnn_output
         layer_scores["cnn"] = float(cnn_output.get("score", 50.0))
-        layer_reliabilities["cnn"] = self._compute_reliability(cnn_output)
+        layer_reliabilities["cnn"] = self._compute_reliability(cnn_output, "cnn")
         layer_availability["cnn"] = bool(cnn_output.get("available", True))
         layer_status["cnn"] = "ok" if layer_availability["cnn"] else "degraded"
 
@@ -228,7 +249,7 @@ class VerificationOrchestrator:
                 skipped = self._skipped_layer_output(key)
                 layer_outputs[key] = skipped
                 layer_scores[key] = float(skipped["score"])
-                layer_reliabilities[key] = 0.0
+                layer_reliabilities[key] = self._compute_reliability(skipped, key)
                 layer_status[key] = "skipped"
                 layer_availability[key] = False
         else:
@@ -249,7 +270,7 @@ class VerificationOrchestrator:
                 output = self._validate_layer_output(key, output) if output.get("available", True) else output
                 layer_outputs[key] = output
                 layer_scores[key] = float(output.get("score", 50.0))
-                layer_reliabilities[key] = self._compute_reliability(output)
+                layer_reliabilities[key] = self._compute_reliability(output, key)
                 layer_availability[key] = bool(output.get("available", True))
                 layer_status[key] = "ok" if layer_availability[key] else "degraded"
 
